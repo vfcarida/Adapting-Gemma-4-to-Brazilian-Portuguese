@@ -75,11 +75,23 @@ class ReportBuilder:
 
         report = "\n\n---\n\n".join(sections)
 
-        # Save report
+        # Save primary report
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.output_path, "w", encoding="utf-8") as f:
             f.write(report)
         logger.info("Report saved → %s", self.output_path)
+
+        # Generate summary.md
+        summary_path = self.output_path.parent / "summary.md"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(self._build_executive_summary_md(all_results))
+        logger.info("Summary saved → %s", summary_path)
+
+        # Generate findings_for_paper.md
+        findings_path = self.output_path.parent / "findings_for_paper.md"
+        with open(findings_path, "w", encoding="utf-8") as f:
+            f.write(self._build_findings_md())
+        logger.info("Findings saved → %s", findings_path)
 
         return report
 
@@ -181,9 +193,39 @@ class ReportBuilder:
             "- **Temperature:** 0.0 (deterministic generation)\n"
             "- **Bootstrap:** 10,000 resamples for confidence intervals\n"
             "- **Think Mode:** Each evaluation run in both `think_on` and `think_off` modes\n"
-            "- **Metrics:** macro-F1 (classification), Pearson r (STS), "
+            "- **Metrics:** macro-F1 (classification), Pearson/Spearman (STS), "
             "Approval Rate (exams), Accuracy (NLI)\n"
             "- **Evaluation Framework:** lm-evaluation-harness-pt\n"
+        )
+
+    def _build_executive_summary_md(self, results: dict[str, Any]) -> str:
+        """Build a standalone summary.md file."""
+        return (
+            "# Executive Summary\n\n"
+            "## Best Models\n"
+            "*(Populate with the top performers across benchmarks)*\n\n"
+            "## Cost vs Quality\n"
+            "*(Populate with analysis of E4B vs 26B and LoRA vs Full)*\n\n"
+            "## Regressions\n"
+            "*(Populate with any catastrophic forgetting observations)*\n\n"
+            "## Conclusion\n"
+            "*(Objective conclusion based on data)*\n"
+        )
+
+    def _build_findings_md(self) -> str:
+        """Build a standalone findings_for_paper.md file."""
+        return (
+            "# Findings for Paper\n\n"
+            "## Principal Results\n"
+            "*(Main tables and statistically significant gains)*\n\n"
+            "## Hypotheses Confirmed/Refuted\n"
+            "- **Replay prevents forgetting**: *(Analyze Ablation C vs B)*\n"
+            "- **Residual Merge vs SFT**: *(Analyze Ablation D vs E)*\n"
+            "- **Think Mode Utility**: *(Analyze think_on vs think_off)*\n\n"
+            "## Limitations & Threats to Validity\n"
+            "- Contamination risk in translated benchmarks\n"
+            "- Multimodal capabilities omitted from CPT\n"
+            "- Dependence on synthetic/translated instruction data for SFT\n"
         )
 
     def _extract_score(self, task_result: dict[str, Any]) -> float | str:
@@ -192,7 +234,7 @@ class ReportBuilder:
             return float(task_result)
         if isinstance(task_result, dict):
             # Try common metric keys
-            for key in ["acc", "acc_norm", "f1", "macro_f1", "pearson", "approval_rate", "exact_match"]:
+            for key in ["acc", "acc_norm", "f1", "macro_f1", "pearson", "spearman", "approval_rate", "rougeL", "exact_match"]:
                 if key in task_result:
                     val = task_result[key]
                     if isinstance(val, (int, float)):

@@ -8,42 +8,38 @@
 
 ---
 
-## 📋 Overview
+## 📋 Scientific Overview
 
-This repository implements a **four-stage adaptation pipeline** for Google Gemma 4 models to Brazilian Portuguese:
+This repository implements a rigorous **five-stage adaptation pipeline** intended to produce state-of-the-art results for Brazilian Portuguese, moving beyond simple instruction-tuning to proper language adaptation. 
 
+Our strategy strictly separates **Language Adaptation (CPT)** from **Instruction Alignment (SFT/DPO)**, preventing the catastrophic forgetting often seen when continuously pretraining on instruction-tuned models.
+
+```mermaid
+graph LR
+    A[Base Model<br>Gemma 4] --> B[CPT<br>Aurora-PT + Replay]
+    B --> C[Residual Merge<br>Task Arithmetic]
+    B --> D[SFT<br>PT-BR Chat]
+    D --> E[DPO / ORPO<br>Preference Tuning]
+    
+    style A fill:#e1f5fe,stroke:#01579b
+    style B fill:#fff3e0,stroke:#e65100
+    style C fill:#e8f5e9,stroke:#1b5e20
+    style D fill:#e8f5e9,stroke:#1b5e20
+    style E fill:#f3e5f5,stroke:#4a148c
 ```
-┌─────────────┐     ┌───────────┐     ┌────────────────┐     ┌─────────┐
-│  Base Model  │────▶│    CPT    │────▶│ Residual Merge │────▶│   SFT   │
-│  (Gemma 4)   │     │ Aurora-PT │     │ Task Arithmetic│     │  PT-BR  │
-└─────────────┘     └───────────┘     └────────────────┘     └─────────┘
-```
 
-| Stage | Method | Data Source |
-|-------|--------|-------------|
-| **1. Baseline** | Pure checkpoint evaluation | — |
-| **2. CPT** | CausalLM next-token prediction + LoRA | Aurora-PT (331B tokens) + EN replay |
-| **3. Merge** | Task Arithmetic: `cpt + α(instruct − base)` | Instruct model weights |
-| **4. SFT** | TRL SFTTrainer with chat template | PT-BR instruction data |
-
-### Target Models
-
-| Model | Type | Active Params | Context |
-|-------|------|--------------|---------|
-| `google/gemma-4-E4B` | Dense (pilot) | ~4.5B | 128K |
-| `google/gemma-4-26B-A4B` | MoE (main) | ~3.8B active / 26B total | 256K |
-
-### Evaluation Baselines
-
-- `CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it`
-- `maritaca-ai/sabia-7b`
-- `Polygl0t/Tucano2-qwen-3.7B-Instruct`
+### 🔬 Core Methodology & Golden Rules
+1. **The Golden Rule**: Aurora-PT is an unstructured corpus and is **never** used inside an `SFTTrainer`. It is processed strictly via `CausalLM` next-token prediction with packed sequences.
+2. **Replay Mix Strategy**: To preserve emergent downstream capabilities and coding skills, our CPT stage utilizes probabilistic dataset interleaving. We mix Portuguese (Aurora-PT) with high-quality English (e.g., FineWeb-Edu) and optional Code (e.g., StarCoder).
+3. **LoRA Safety Validation**: Gemma 4 utilizes `Gemma4ClippableLinear` in its vision and audio towers. We explicitly restrict our LoRA `target_modules` to language projections to prevent architectural crashes.
+4. **Think Mode Isolation**: Evaluations are strictly isolated. We run all benchmarks in both `think_on` and `think_off` parametric modes to decouple native language improvements from chain-of-thought reasoning artifacts.
+5. **Multi-tier Decontamination**: We run MinHash LSH and Exact/Normalized overlap checks against all benchmark datasets prior to training to ensure clean data validation.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Setup
+### 1. Environment Setup
 
 ```bash
 # Clone the repository
@@ -55,161 +51,92 @@ make install
 
 # Configure credentials
 cp .env.example .env
-# Edit .env with your HF_TOKEN, WANDB_API_KEY, etc.
+# Edit .env with your HF_TOKEN (Required for Gemma 4 & Aurora-PT) and WANDB_API_KEY
 ```
 
-### 2. Data Quality Checks
+### 2. Data Quality & Contamination Audits (Stage 1)
 
 ```bash
-# Tokenizer fertility analysis
-make tokenizer-audit
+# Tokenizer fertility analysis (tokens/char, tokens/word efficiency)
+bash scripts/run_tokenizer_audit.sh
 
-# Three-tier contamination check (exact + normalized + MinHash)
-make contamination-check
+# Three-tier contamination check (Exact + Normalized + MinHash) against 14 benchmarks
+bash scripts/run_contamination_checks.sh
 ```
 
-### 3. Training
+### 3. Training & Automated Ablations
+
+Our pipeline features an automated ablation orchestrator to systematically test our hypotheses:
+- **Ablation B:** Base + CPT (Pure Aurora)
+- **Ablation C:** Base + CPT + EN Replay
+- **Ablation D:** CPT + Residual Merge
+- **Ablation E:** CPT + SFT PT-BR
+- **Ablation F:** CPT + SFT Mixed
 
 ```bash
-# Pilot CPT on Gemma-4-E4B (single GPU)
-make cpt-pilot
+# Run the automated ablation matrix
+bash scripts/run_ablations.sh
 
-# Main CPT on Gemma-4-26B-A4B (multi-GPU + DeepSpeed)
-make cpt-main
+# Alternatively, run the main CPT pipeline on Gemma-4-26B-A4B (Multi-GPU + DeepSpeed)
+bash scripts/run_cpt_main.sh
 
-# Residual merge with alpha sweep
-make merge
-
-# Supervised fine-tuning
-make sft
+# Run DPO Preference Tuning
+python -m src.train.dpo_trainer --config configs/dpo.yml
 ```
 
-### 4. Evaluation
+### 4. Comprehensive Evaluation
 
 ```bash
-# Evaluate all models on 13 PT-BR benchmarks
-make eval
-
-# Generate comparison report
-make report
+# Evaluate all models on 14 PT-BR benchmarks
+bash scripts/run_eval.sh
 ```
-
-### 5. Full Pipeline
-
-```bash
-make all  # End-to-end: audit → contamination → CPT → merge → SFT → eval → report
-```
-
----
-
-## 📁 Repository Structure
-
-```
-.
-├── README.md
-├── pyproject.toml
-├── requirements.txt
-├── Makefile
-├── .env.example
-├── configs/
-│   ├── cpt_pilot.yml          # E4B CPT config
-│   ├── cpt_main.yml           # 26B-A4B CPT + DeepSpeed config
-│   ├── sft.yml                # SFT config with label masking
-│   ├── eval.yml               # Evaluation suite config
-│   ├── merge.yml              # Task arithmetic merge config
-│   └── ds_zero3.json          # DeepSpeed ZeRO-3 config
-├── data/                      # Downloaded datasets (gitignored)
-├── model/                     # Downloaded models (gitignored)
-├── reports/                   # Generated reports & metrics
-├── src/
-│   ├── data/
-│   │   ├── aurora_loader.py         # Streaming Aurora-PT with packed sequences
-│   │   ├── tokenizer_audit.py       # Fertility analysis (tokens/char, tokens/word)
-│   │   ├── contamination_checks.py  # 3-tier decontamination
-│   │   ├── replay_mix_builder.py    # PT/EN replay mixing
-│   │   └── instruction_data_builder.py  # Gemma 4 chat template formatter
-│   ├── train/
-│   │   ├── cpt_trainer.py     # CausalLM CPT with LoRA (NOT SFTTrainer)
-│   │   ├── sft_trainer.py     # TRL SFTTrainer for instruction data
-│   │   ├── residual_merge.py  # Task Arithmetic weight merging
-│   │   └── callbacks.py       # JSONL logging, perplexity, early stopping
-│   ├── eval/
-│   │   ├── benchmark_runner.py   # Unified eval orchestrator
-│   │   ├── prompt_templates.py   # Gemma 4 template + think mode
-│   │   ├── metrics.py            # macro-F1, Pearson, approval rate
-│   │   ├── bootstrap_ci.py       # Bootstrap CIs + paired tests
-│   │   ├── report_builder.py     # Markdown report generation
-│   │   └── tasks/                # 13 PT-BR benchmark definitions
-│   └── utils/
-│       ├── logging_utils.py   # Structured logging + JSONL writer
-│       ├── seed.py            # Global reproducibility
-│       ├── checkpointing.py   # Save/load + LoRA merge
-│       ├── hf_utils.py        # HF auth + safe LoRA config
-│       └── config_utils.py    # YAML loader + CLI factory
-└── scripts/
-    ├── run_tokenizer_audit.sh
-    ├── run_contamination_checks.sh
-    ├── run_baselines.sh
-    ├── run_cpt_pilot.sh
-    ├── run_cpt_main.sh
-    ├── run_residual_merge.sh
-    ├── run_sft.sh
-    ├── run_eval.sh
-    └── run_all.sh
-```
+This generates two key artifacts in `reports/`:
+- `summary.md`: Performance tables and Cost vs Quality analysis.
+- `findings_for_paper.md`: Explicit analysis of hypotheses (e.g., Catastrophic Forgetting, Merge vs SFT) intended for direct inclusion in academic papers.
 
 ---
 
 ## 📊 Evaluation Benchmarks
 
-| Benchmark | Domain | Metric | Few-shot |
-|-----------|--------|--------|----------|
-| ENEM | Education (national exam) | Approval Rate | 3 |
-| BluEx | Education (university entrance) | Approval Rate | 3 |
-| OAB-Bench | Legal (bar exam) | Approval Rate | 3 |
-| ASSIN2-RTE | NLI (textual entailment) | macro-F1 | 15 |
-| ASSIN2-STS | Semantic similarity | Pearson r | 15 |
-| HateBR | Hate speech detection | macro-F1 | 25 |
-| TweetSentBR | Sentiment analysis | macro-F1 | 25 |
-| COPA-PT | Causal reasoning | Accuracy | 0 |
-| BRoverbs | Proverb completion | Accuracy | 5 |
-| MRPC-PT | Paraphrase detection | macro-F1 | 5 |
-| RTE-PT | Textual entailment | Accuracy | 15 |
-| DoNotAnswer-PT | Safety / refusal | Refusal Rate | 0 |
-| TugueSICE-PT | Language understanding | Accuracy | 5 |
+We utilize a layered evaluation suite to prevent saturation on easy or highly-translated English benchmarks. All models are evaluated generatively (`temperature=0.0`).
 
-All evaluations run in both **think_on** and **think_off** modes with temperature=0.0.
-
----
-
-## ⚙️ Key Design Decisions
-
-### Golden Rule: Aurora-PT Data Handling
-> Aurora-PT is unstructured text. It is **never** used with `SFTTrainer`. All Aurora-PT training uses standard `CausalLM` next-token prediction with packed sequences.
-
-### LoRA Safety on Gemma 4
-Gemma 4 contains `Gemma4ClippableLinear` layers in vision/audio towers. We **never** use `target_modules="all-linear"`. Instead, we whitelist only language model projections:
-```python
-target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-```
-
-### Task Arithmetic Formula
-```
-inst_residual    = instruct_weights − base_weights
-adapted_instruct = cpt_weights     + (α × inst_residual)
-```
+| Benchmark | Domain | Metric | 
+|-----------|--------|--------|
+| **ENEM** | Education (National Exam) | Approval Rate |
+| **BluEx** | Education (University Entrance) | Approval Rate |
+| **OAB-Bench** | Legal (Bar Exam) | Approval Rate |
+| **ASSIN2-RTE** | NLI (Textual Entailment) | macro-F1 |
+| **ASSIN2-STS** | Semantic Similarity | Pearson r / Spearman ρ |
+| **HateBR** | Hate Speech Detection | macro-F1 |
+| **TweetSentBR** | Sentiment Analysis | macro-F1 |
+| **COPA-PT** | Causal Reasoning | Accuracy |
+| **BRoverbs** | Cultural (Proverb Completion) | Accuracy |
+| **MRPC-PT** | Paraphrase Detection | macro-F1 |
+| **RTE-PT** | Textual Entailment | Accuracy |
+| **DoNotAnswer-PT** | Safety / Refusal | Refusal Rate |
+| **TugueSICE-PT** | Language Understanding | Accuracy |
+| **XLSum-PT** | Long-context Summarization | ROUGE (opt) / Gen |
 
 ---
+
+## 📁 Repository Architecture
+
+```
+.
+├── ablations/                 # Automated hypothesis test outputs
+├── configs/                   # YAML configurations for CPT, SFT, DPO, Merge, Eval
+├── src/
+│   ├── data/                  # Streaming loaders, Replay mix (PT/EN/Code), Decontamination
+│   ├── train/                 # CPT (CausalLM), SFTTrainer, DPOTrainer, Task Arithmetic
+│   ├── eval/                  # Benchmark Runner, Prompt Templates, Bootstrap CIs, Metrics
+│   └── eval/tasks/            # 14 distinct PT-BR evaluation task definitions
+├── scripts/                   # End-to-end bash execution scripts
+└── reports/                   # Markdown generation (summary.md, findings_for_paper.md)
+```
 
 ## 📝 Requirements
-
 - Python ≥ 3.10
-- CUDA-capable GPU (A100-80GB recommended for E4B; multi-GPU for 26B-A4B)
-- HuggingFace account with access to Gemma 4 models and Aurora-PT dataset
-- Weights & Biases account (optional, for experiment tracking)
-
----
+- HuggingFace account with access to `google/gemma-4` variants and `Itau-Unibanco/Aurora-PT`.
 
 ## 📜 License
-
 Apache 2.0

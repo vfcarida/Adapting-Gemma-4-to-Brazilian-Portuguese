@@ -49,21 +49,25 @@ class ReplayMixBuilder:
         self,
         pt_ratio: float = 0.85,
         en_ratio: float = 0.15,
+        code_ratio: float = 0.0,
         pt_dataset_id: str = "Itau-Unibanco/Aurora-PT",
         en_dataset_id: str = "HuggingFaceFW/fineweb-edu",
+        code_dataset_id: str = "bigcode/starcoderdata",
         pt_text_column: str = "text",
         en_text_column: str = "text",
+        code_text_column: str = "content",
         seed: int = 42,
         num_shards: int = 1,
         shard_index: int = 0,
     ) -> None:
-        if abs(pt_ratio + en_ratio - 1.0) > 1e-6:
+        if abs(pt_ratio + en_ratio + code_ratio - 1.0) > 1e-6:
             raise ValueError(
-                f"pt_ratio ({pt_ratio}) + en_ratio ({en_ratio}) must equal 1.0"
+                f"pt_ratio ({pt_ratio}) + en_ratio ({en_ratio}) + code_ratio ({code_ratio}) must equal 1.0"
             )
 
         self.pt_ratio = pt_ratio
         self.en_ratio = en_ratio
+        self.code_ratio = code_ratio
         self.seed = seed
 
         # ⚠️ REQUIRES HF_TOKEN for gated dataset access (Aurora-PT)
@@ -75,6 +79,8 @@ class ReplayMixBuilder:
         )
         self._en_dataset_id = en_dataset_id
         self._en_text_column = en_text_column
+        self._code_dataset_id = code_dataset_id
+        self._code_text_column = code_text_column
 
     def _en_stream(self) -> Iterator[str]:
         """Stream English documents from the replay source."""
@@ -91,22 +97,41 @@ class ReplayMixBuilder:
             if text and text.strip():
                 yield text.strip()
 
+    def _code_stream(self) -> Iterator[str]:
+        """Stream Code documents from the replay source."""
+        from datasets import load_dataset
+
+        if self.code_ratio <= 0.0:
+            return
+
+        logger.info("Streaming CODE replay source: %s", self._code_dataset_id)
+        ds = load_dataset(
+            self._code_dataset_id,
+            split="train",
+            streaming=True,
+        )
+        for example in ds:
+            text = example.get(self._code_text_column, "")
+            if text and text.strip():
+                yield text.strip()
+
     def stream(self) -> Iterator[str]:
-        """Yield mixed PT/EN documents according to configured ratios.
+        """Yield mixed PT/EN/CODE documents according to configured ratios.
 
         Uses probabilistic sampling: for each document slot, draw from
-        the Portuguese stream with probability ``pt_ratio`` and from
-        the English stream with probability ``en_ratio``.
+        the Portuguese stream, English stream, or Code stream.
         """
         rng = random.Random(self.seed)
         pt_iter = self._pt_loader.stream()
         en_iter = self._en_stream()
+        code_iter = self._code_stream()
 
         pt_exhausted = False
         en_exhausted = False
+        code_exhausted = self.code_ratio <= 0.0
 
         while True:
-            if pt_exhausted and en_exhausted:
+            if pt_exhausted and en_exhausted and code_exhausted:
                 break
 
             # Probabilistic source selection
@@ -117,13 +142,24 @@ class ReplayMixBuilder:
                     yield next(pt_iter)
                 except StopIteration:
                     pt_exhausted = True
-                    logger.info("Portuguese stream exhausted — switching to EN only.")
+                    logger.info("Portuguese stream exhausted.")
+            elif roll < (self.pt_ratio + self.en_ratio) and not en_exhausted:
+                try:
+                    yield next(en_iter)
+                except StopIteration:
+                    en_exhausted = True
+                    logger.info("English stream exhausted.")
+            elif not code_exhausted:
+                try:
+                    yield next(code_iter)
+                except StopIteration:
+                    code_exhausted = True
+                    logger.info("Code stream exhausted.")
             elif not en_exhausted:
                 try:
                     yield next(en_iter)
                 except StopIteration:
                     en_exhausted = True
-                    logger.info("English stream exhausted — switching to PT only.")
             elif not pt_exhausted:
                 try:
                     yield next(pt_iter)
@@ -176,8 +212,10 @@ def build_replay_mix_from_config(
     builder = ReplayMixBuilder(
         pt_ratio=data_cfg.get("pt_ratio", 0.85),
         en_ratio=data_cfg.get("en_ratio", 0.15),
+        code_ratio=data_cfg.get("code_ratio", 0.0),
         pt_dataset_id=data_cfg.get("dataset_id", "Itau-Unibanco/Aurora-PT"),
         en_dataset_id=data_cfg.get("en_dataset_id", "HuggingFaceFW/fineweb-edu"),
+        code_dataset_id=data_cfg.get("code_dataset_id", "bigcode/starcoderdata"),
         num_shards=data_cfg.get("num_shards", 1),
         shard_index=data_cfg.get("shard_index", 0),
     )
