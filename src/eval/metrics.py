@@ -6,6 +6,7 @@ Evaluation metrics for PT-BR benchmarks.
 Provides:
   • macro-F1       — classification tasks (HateBR, TweetSentBR, ASSIN2-RTE)
   • Pearson r      — semantic similarity (ASSIN2-STS)
+  • Spearman rho   — semantic similarity rank correlation
   • Approval Rate  — exam-style (ENEM, BluEx, OAB)
   • Accuracy       — standard accuracy (COPA-PT, RTE-PT)
   • Refusal Rate   — safety evaluation (DoNotAnswer-PT)
@@ -84,6 +85,30 @@ def compute_pearson(
     return float(r)
 
 
+def compute_spearman(
+    y_true: list[float],
+    y_pred: list[float],
+) -> float:
+    """Compute Spearman rank correlation coefficient.
+
+    Parameters
+    ----------
+    y_true : list[float]
+        Ground truth scores.
+    y_pred : list[float]
+        Predicted scores.
+
+    Returns
+    -------
+    float
+        Spearman rho in [-1, 1].
+    """
+    if len(y_true) < 2:
+        return 0.0
+    rho, _ = stats.spearmanr(y_true, y_pred)
+    return float(rho)
+
+
 def compute_approval_rate(
     correct: list[bool],
 ) -> float:
@@ -134,6 +159,7 @@ METRIC_FUNCTIONS = {
     "macro_f1": compute_macro_f1,
     "accuracy": compute_accuracy,
     "pearson": compute_pearson,
+    "spearman": compute_spearman,
     "approval_rate": compute_approval_rate,
     "refusal_rate": compute_refusal_rate,
 }
