@@ -1,0 +1,103 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  SFT — Supervised Fine-Tuning Config (Post-Merge)                   ║
+# ║  Instruction tuning with Gemma 4 official chat template              ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+# ── Model ────────────────────────────────────────────────────────────
+model:
+  # Path to the merged CPT checkpoint (output of residual_merge.py)
+  model_id: "./output/merged/gemma-4-E4B-ptbr-merged-alpha0.9"
+  torch_dtype: "bfloat16"
+  attn_implementation: "sdpa"
+  trust_remote_code: true
+
+# ── Dataset ──────────────────────────────────────────────────────────
+data:
+  # ⚠️ REPLACE with your chosen PT-BR instruction dataset
+  # This must be structured instruction data (human/assistant pairs),
+  # NOT raw Aurora-PT text (Golden Rule).
+  dataset_id: "SET_YOUR_INSTRUCTION_DATASET_HERE"
+  dataset_split: "train"
+  # Validation split (optional, will auto-split if not available)
+  val_split: "validation"
+  val_size: 0.05                    # fallback: split 5% from train
+  max_seq_len: 4096
+
+  # ── Chat template ───────────────────────────────────────────────
+  # Column mapping for the instruction dataset
+  messages_column: "messages"       # or null for separate columns
+  # If the dataset uses separate columns instead of "messages":
+  human_column: "instruction"
+  assistant_column: "output"
+  system_column: "system_prompt"    # optional
+
+  # ── Label masking ──────────────────────────────────────────────
+  # Only compute loss on assistant tokens
+  completion_only: true
+  # Response template token(s) that mark the start of assistant turn
+  # For Gemma 4: the turn marker preceding the model's response
+  response_template: "<start_of_turn>model\n"
+  instruction_template: "<start_of_turn>user\n"
+
+# ── LoRA / PEFT ──────────────────────────────────────────────────────
+peft:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  modules_to_exclude:
+    - ".*vision_tower.*"
+    - ".*audio_tower.*"
+    - ".*multi_modal_projector.*"
+
+# ── Training ─────────────────────────────────────────────────────────
+training:
+  output_dir: "./output/sft"
+  num_train_epochs: 3
+  max_steps: -1                     # -1 means use num_train_epochs
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  lr_scheduler_type: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+
+  # ── Logging ──────────────────────────────────────────────────────
+  logging_steps: 5
+  logging_dir: "./reports/training_logs/sft"
+  report_to:
+    - "wandb"
+    - "tensorboard"
+  run_name: "sft-ptbr"
+
+  # ── Saving ───────────────────────────────────────────────────────
+  save_strategy: "epoch"
+  save_total_limit: 3
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+  # ── Evaluation ───────────────────────────────────────────────────
+  eval_strategy: "epoch"
+  per_device_eval_batch_size: 4
+
+  # ── Misc ─────────────────────────────────────────────────────────
+  seed: 42
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  remove_unused_columns: false

@@ -1,0 +1,154 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  Evaluation Config — PT-BR Benchmark Suite                           ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+# ── General ──────────────────────────────────────────────────────────
+eval:
+  temperature: 0.0                  # deterministic generation
+  seed: 42
+  batch_size: "auto"                # auto-detect from GPU memory
+  device: "cuda"
+  cache_dir: "./cache/eval_cache"
+  results_dir: "./reports/eval_results"
+  # If true, skip evaluation if a cached result for (model, task) exists
+  use_cache: true
+
+# ── Think Mode ───────────────────────────────────────────────────────
+# Run each evaluation in both modes for parametric comparison
+think_modes:
+  - name: "think_off"
+    enable_thinking: false
+  - name: "think_on"
+    enable_thinking: true
+
+# ── Tasks ────────────────────────────────────────────────────────────
+tasks:
+  # ── Exam-style (Approval Rate) ─────────────────────────────────
+  - name: "enem"
+    module: "src.eval.tasks.enem"
+    metric: "approval_rate"
+    num_fewshot: 3
+    description: "ENEM — Brazilian High School National Exam"
+
+  - name: "bluex"
+    module: "src.eval.tasks.bluex"
+    metric: "approval_rate"
+    num_fewshot: 3
+    description: "BluEx — University Entrance Exam"
+
+  - name: "oab_bench"
+    module: "src.eval.tasks.oab_bench"
+    metric: "approval_rate"
+    num_fewshot: 3
+    description: "OAB-Bench — Brazilian Bar Exam"
+
+  # ── NLI / Entailment (macro-F1 / Accuracy) ────────────────────
+  - name: "assin2_rte"
+    module: "src.eval.tasks.assin2_rte"
+    metric: "macro_f1"
+    num_fewshot: 15
+    description: "ASSIN2-RTE — Textual Entailment"
+
+  - name: "rte_pt"
+    module: "src.eval.tasks.rte_pt"
+    metric: "accuracy"
+    num_fewshot: 15
+    description: "RTE-PT — Recognizing Textual Entailment"
+
+  - name: "mrpc_pt"
+    module: "src.eval.tasks.mrpc_pt"
+    metric: "macro_f1"
+    num_fewshot: 5
+    description: "MRPC-PT — Paraphrase Detection"
+
+  # ── Semantic Similarity (Pearson) ──────────────────────────────
+  - name: "assin2_sts"
+    module: "src.eval.tasks.assin2_sts"
+    metric: "pearson"
+    num_fewshot: 15
+    description: "ASSIN2-STS — Semantic Textual Similarity"
+
+  # ── Social / Sentiment (macro-F1) ──────────────────────────────
+  - name: "hatebr"
+    module: "src.eval.tasks.hatebr"
+    metric: "macro_f1"
+    num_fewshot: 25
+    description: "HateBR — Hate Speech Detection"
+
+  - name: "tweet_sentbr"
+    module: "src.eval.tasks.tweet_sentbr"
+    metric: "macro_f1"
+    num_fewshot: 25
+    description: "TweetSentBR — Tweet Sentiment Analysis"
+
+  # ── Reasoning / Understanding (Accuracy) ───────────────────────
+  - name: "copa_pt"
+    module: "src.eval.tasks.copa_pt"
+    metric: "accuracy"
+    num_fewshot: 0
+    description: "COPA-PT — Causal Reasoning"
+
+  - name: "broverbs"
+    module: "src.eval.tasks.broverbs"
+    metric: "accuracy"
+    num_fewshot: 5
+    description: "BRoverbs — Proverb Completion"
+
+  - name: "tuguesice_pt"
+    module: "src.eval.tasks.tuguesice_pt"
+    metric: "accuracy"
+    num_fewshot: 5
+    description: "TugueSICE-PT — Portuguese Understanding"
+
+  # ── Safety ─────────────────────────────────────────────────────
+  - name: "donotanswer_pt"
+    module: "src.eval.tasks.donotanswer_pt"
+    metric: "refusal_rate"
+    num_fewshot: 0
+    description: "DoNotAnswer-PT — Safety / Refusal Evaluation"
+
+# ── Models to Evaluate ───────────────────────────────────────────────
+models:
+  # Our models (paths will be filled after training)
+  - id: "google/gemma-4-E4B"
+    label: "Gemma4-E4B (base)"
+    category: "ours"
+
+  - id: "./output/cpt_pilot_e4b/final"
+    label: "Gemma4-E4B-CPT"
+    category: "ours"
+
+  - id: "./output/merged/gemma-4-E4B-ptbr-merged-alpha0.9"
+    label: "Gemma4-E4B-Merged"
+    category: "ours"
+
+  - id: "./output/sft/final"
+    label: "Gemma4-E4B-SFT-PTBR"
+    category: "ours"
+
+  # Baselines
+  - id: "google/gemma-4-E4B-it"
+    label: "Gemma4-E4B-IT (reference)"
+    category: "baseline"
+
+  - id: "CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it"
+    label: "Gaia-PT-BR-4B-IT"
+    category: "baseline"
+
+  - id: "maritaca-ai/sabia-7b"
+    label: "Sabiá-7B"
+    category: "baseline"
+
+  - id: "Polygl0t/Tucano2-qwen-3.7B-Instruct"
+    label: "Tucano2-3.7B-Instruct"
+    category: "baseline"
+
+# ── Report ───────────────────────────────────────────────────────────
+report:
+  output_path: "./reports/benchmark_report.md"
+  bootstrap_n: 10000
+  confidence_level: 0.95
+  significance_markers:
+    0.05: "*"
+    0.01: "**"
+    0.001: "***"
