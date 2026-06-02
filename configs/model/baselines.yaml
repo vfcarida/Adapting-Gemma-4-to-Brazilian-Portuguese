@@ -1,0 +1,75 @@
+# =============================================================================
+# Baselines Externos para Comparação
+# =============================================================================
+# Modelos de referência contra os quais comparar a adaptação Gemma 4.
+# Cada baseline tem protocolo de prompting específico.
+
+baselines:
+  # -------------------------------------------------------------------------
+  # Gemma 4 original (nosso ponto de partida, sem adaptação)
+  # -------------------------------------------------------------------------
+  gemma4_e4b_it:
+    id: "google/gemma-4-E4B-it"
+    name: "Gemma4-E4B-IT"
+    family: "gemma4"
+    type: "instruction_tuned"
+    language_adapted: false
+    is_chat_model: true
+    prompt_builder: "gemma4"
+    notes: "Baseline direto — mesmo modelo sem adaptação PT"
+
+  gemma4_26b_it:
+    id: "google/gemma-4-26B-A4B-it"
+    name: "Gemma4-26B-IT"
+    family: "gemma4"
+    type: "instruction_tuned"
+    language_adapted: false
+    is_chat_model: true
+    prompt_builder: "gemma4"
+    notes: "Modelo maior para comparar escala vs adaptação"
+
+  # -------------------------------------------------------------------------
+  # Gaia PT-BR (adaptação PT existente do Gemma 3)
+  # -------------------------------------------------------------------------
+  gaia_ptbr:
+    id: "CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it"
+    name: "Gaia-PT-BR-4B"
+    family: "gemma3"
+    type: "instruction_tuned"
+    language_adapted: true
+    is_chat_model: true
+    prompt_builder: "gemma3"
+    notes: "Adaptação PT do Gemma 3 por CEIA-UFG. Comparação direta de estratégia."
+
+  # -------------------------------------------------------------------------
+  # Sabia-7B (modelo nativo PT-BR)
+  # -------------------------------------------------------------------------
+  sabia_7b:
+    id: "maritaca-ai/sabia-7b"
+    name: "Sabia-7B"
+    family: "llama2"
+    type: "pretrained_pt"
+    language_adapted: true
+    is_chat_model: false
+    prompt_builder: "few_shot_plain"
+    # IMPORTANTE: Sabia-7B NÃO é instruction-tuned.
+    # Deve usar protocolo few-shot em todas as avaliações.
+    num_shots_override: 5
+    notes: >
+      Modelo Portuguese-first por Maritaca AI. Base model (não chat).
+      Usar SEMPRE few-shot prompting com exemplos claros.
+      Não usar chat template — usar formato de completação direta.
+
+  # -------------------------------------------------------------------------
+  # Tucano 2 (modelo PT-BR open-source)
+  # -------------------------------------------------------------------------
+  tucano2_instruct:
+    id: "TucanoBR/Tucano-2-7b-instruct"
+    name: "Tucano2-7B-Instruct"
+    family: "tucano"
+    type: "instruction_tuned"
+    language_adapted: true
+    is_chat_model: true
+    prompt_builder: "chatml"  # TODO: Verificar template exato do Tucano 2
+    enabled: false
+    notes: "Habilitar quando confirmar disponibilidade e template correto"

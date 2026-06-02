@@ -1,49 +1,32 @@
-"""
-src/eval/tasks/assin2_rte.py
-────────────────────────────
-ASSIN2-RTE — Recognizing Textual Entailment (Portuguese).
-Classification task, measured by macro-F1.
-"""
+"""ASSIN2-RTE task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "assin2_rte"
-    dataset_id: str = "nilc-nlp/assin2"
-    dataset_split: str = "test"
-    metric: str = "macro_f1"
-    num_fewshot: int = 15
-    description: str = "ASSIN2-RTE — Recognizing Textual Entailment"
-
-    premise_column: str = "premise"
-    hypothesis_column: str = "hypothesis"
-    label_column: str = "entailment_judgment"
-    label_map: dict[int, str] = field(default_factory=lambda: {
-        0: "Nenhuma",       # None
-        1: "Implicação",    # Entailment
-        2: "Paráfrase",     # Paraphrase
-    })
-
-    output_type: str = "multiple_choice"
-    doc_to_text: str = (
-        "Premissa: {{premise}}\n"
-        "Hipótese: {{hypothesis}}\n"
-        "A relação entre a premissa e a hipótese é:"
-    )
-    doc_to_target: str = "{{entailment_judgment}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/nilc-nlp/assin2",
-        "language": "pt-BR",
-        "domain": "NLI",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class Assin2RTETask(BaseTask):
+    """ASSIN2 Recognizing Textual Entailment."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "assin2")
+        data = self._load_from_hub(hub_id, split="test")
+
+        examples = []
+        for item in data:
+            example = {
+                "premise": item.get("premise", item.get("sentence1", "")),
+                "hypothesis": item.get("hypothesis", item.get("sentence2", "")),
+                "label": "entailment" if item.get("entailment_judgment", 0) == 1 else "not_entailment",
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return example["label"]
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        text = raw_prediction.strip().lower()
+        if "entailment" in text and "not" not in text.split("entailment")[0][-5:]:
+            return "entailment"
+        return "not_entailment"

@@ -1,339 +1,321 @@
+"""Residual merge via task arithmetic for instruction recovery.
+
+This module implements the "task arithmetic" method from Ilharco et al. (2023)
+to recover instruction-following capability after continued pretraining.
+
+The key insight: instruction-tuning creates a "task vector" (the difference
+between IT and base weights). This vector can be added to any checkpoint
+derived from the same base model to transfer instruction capability.
+
+Formula:
+    instruction_residual = instruct_weights - base_weights
+    adapted_instruct = cpt_weights + alpha * instruction_residual
+
+Where:
+    - base_weights: Original pre-trained model (e.g., gemma-4-E4B)
+    - instruct_weights: Official instruction-tuned model (e.g., gemma-4-E4B-it)
+    - cpt_weights: Our CPT-adapted model (trained from base on Aurora-PT)
+    - alpha: Scaling factor controlling instruction strength
+
+Alpha interpretation:
+    - alpha = 0: Pure CPT model (no instruction capability)
+    - alpha = 1: Full instruction vector transfer
+    - alpha > 1: Amplified instructions (may degrade quality)
+    - alpha < 1: Partial transfer (may preserve more CPT adaptation)
+
+Memory management:
+    Loading 3 full models simultaneously requires significant RAM.
+    We load/unload models sequentially, keeping only state_dicts in memory.
+    For a 4B model in bfloat16, each state_dict is ~8GB, so peak usage is ~24GB RAM.
+
+References:
+    - Ilharco et al. "Editing Models with Task Arithmetic" (ICLR 2023)
+    - Yadav et al. "TIES-Merging" (NeurIPS 2023)
 """
-src/train/residual_merge.py
-───────────────────────────
-Task Arithmetic / Residual Merge for instruct capability restoration.
-
-Implements the formula:
-    inst_residual   = instruct_weights  −  base_weights
-    adapted_instruct = cpt_weights      +  (α × inst_residual)
-
-Features:
-  • Layer-by-layer tensor operations with shape validation
-  • Alpha sweep via CLI (comma-separated or from YAML)
-  • Handles MoE expert layers correctly
-  • Saves merged checkpoints in safetensors format
-  • Progress bar with tqdm
-"""
-
-from __future__ import annotations
 
 import gc
 import json
-import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import torch
-from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.utils.config_utils import load_config, parse_args, parse_overrides
-from src.utils.logging_utils import get_logger, setup_logging
-from src.utils.seed import set_global_seed
+from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
-class ResidualMerger:
-    """Perform Task Arithmetic merging of model weights.
+def compute_residual_merge(
+    base_model_id: str,
+    instruct_model_id: str,
+    cpt_model_path: str,
+    alpha: float,
+    output_dir: str,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.bfloat16,
+) -> Path:
+    """Compute residual merge and save the result.
 
-    Parameters
-    ----------
-    base_model_id : str
-        HuggingFace ID or path to the original base model.
-    instruct_model_id : str
-        HuggingFace ID or path to the instruct variant.
-    cpt_model_path : str
-        Path to the CPT-adapted model checkpoint.
-    output_dir : str | Path
-        Directory for merged model outputs.
-    torch_dtype : str
-        Data type for tensor operations.
-    device : str
-        Device for computations (``"cpu"`` recommended for large models).
+    Loads all three models (base, instruct, CPT), computes the instruction
+    residual, applies it to the CPT weights with scaling factor alpha,
+    and saves the merged model.
+
+    Args:
+        base_model_id: HuggingFace ID of the original base model.
+            Must be the exact model that was continued-pretrained.
+        instruct_model_id: HuggingFace ID of the instruction-tuned variant.
+            Must share the same architecture as base_model_id.
+        cpt_model_path: Local path to the CPT-adapted model checkpoint.
+        alpha: Scaling factor for the instruction residual.
+            Typical range: [0.5, 1.2]. Start with 1.0.
+        output_dir: Directory to save merged model. A subdirectory
+            `alpha_X.XX` will be created for each alpha value.
+        device: Device for computation. Use "cpu" to avoid GPU memory issues.
+        dtype: Data type for arithmetic. bfloat16 matches training precision.
+
+    Returns:
+        Path to the saved merged model directory.
+
+    Raises:
+        RuntimeError: If model loading fails or shapes are incompatible.
     """
+    output_path = Path(output_dir) / f"alpha_{alpha:.2f}"
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    def __init__(
-        self,
-        base_model_id: str,
-        instruct_model_id: str,
-        cpt_model_path: str,
-        output_dir: str | Path = "./output/merged",
-        torch_dtype: str = "bfloat16",
-        device: str = "cpu",
-    ) -> None:
-        self.base_model_id = base_model_id
-        self.instruct_model_id = instruct_model_id
-        self.cpt_model_path = cpt_model_path
-        self.output_dir = Path(output_dir)
-        self.device = device
+    logger.info(f"Computing residual merge with alpha={alpha}")
+    logger.info(f"  Base: {base_model_id}")
+    logger.info(f"  Instruct: {instruct_model_id}")
+    logger.info(f"  CPT: {cpt_model_path}")
 
-        dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-        self.torch_dtype = dtype_map.get(torch_dtype, torch.bfloat16)
+    start_time = time.time()
 
-    def merge(
-        self,
-        alpha: float,
-        output_name: str | None = None,
-        validate_shapes: bool = True,
-        save_safetensors: bool = True,
-    ) -> Path:
-        """Execute the residual merge for a given alpha value.
+    # --- Load state dicts sequentially to minimize peak memory ---
 
-        Parameters
-        ----------
-        alpha : float
-            Scaling factor for the instruction residual.
-        output_name : str | None
-            Name for the output directory.  Defaults to template.
-        validate_shapes : bool
-            If ``True``, verify tensor shapes match before arithmetic.
-        save_safetensors : bool
-            Save using safetensors format.
+    logger.info("Loading base model weights...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_id, torch_dtype=dtype, device_map=device
+    )
+    base_state = base_model.state_dict()
+    del base_model
+    gc.collect()  # Free model graph, keep only state dict
 
-        Returns
-        -------
-        Path
-            Path to the merged model directory.
-        """
-        if output_name is None:
-            output_name = f"merged-alpha{alpha}"
+    logger.info("Loading instruct model weights...")
+    instruct_model = AutoModelForCausalLM.from_pretrained(
+        instruct_model_id, torch_dtype=dtype, device_map=device
+    )
+    instruct_state = instruct_model.state_dict()
+    del instruct_model
+    gc.collect()
 
-        merge_dir = self.output_dir / output_name
-        merge_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Loading CPT model weights...")
+    cpt_model = AutoModelForCausalLM.from_pretrained(
+        cpt_model_path, torch_dtype=dtype, device_map=device
+    )
+    cpt_state = cpt_model.state_dict()
+    del cpt_model
+    gc.collect()
 
-        logger.info("╔══════════════════════════════════════════════════════╗")
-        logger.info("║  Residual Merge — Task Arithmetic                    ║")
-        logger.info("║  α = %.4f                                           ║", alpha)
-        logger.info("╚══════════════════════════════════════════════════════╝")
-        logger.info("Base:      %s", self.base_model_id)
-        logger.info("Instruct:  %s", self.instruct_model_id)
-        logger.info("CPT:       %s", self.cpt_model_path)
-        logger.info("Output:    %s", merge_dir)
+    # --- Validate parameter compatibility ---
 
-        # ── Load state dicts ─────────────────────────────────────────
-        logger.info("Loading base model weights …")
-        base_sd = self._load_state_dict(self.base_model_id)
+    logger.info("Validating parameter shapes...")
+    base_keys = set(base_state.keys())
+    instruct_keys = set(instruct_state.keys())
+    cpt_keys = set(cpt_state.keys())
 
-        logger.info("Loading instruct model weights …")
-        instruct_sd = self._load_state_dict(self.instruct_model_id)
+    # Warn about key mismatches (shouldn't happen with same model family)
+    if base_keys != instruct_keys:
+        missing = base_keys - instruct_keys
+        extra = instruct_keys - base_keys
+        if missing:
+            logger.warning(f"Keys in base but not instruct: {list(missing)[:5]}")
+        if extra:
+            logger.warning(f"Keys in instruct but not base: {list(extra)[:5]}")
 
-        logger.info("Loading CPT model weights …")
-        cpt_sd = self._load_state_dict(self.cpt_model_path)
+    # Only merge parameters present in all three models
+    common_keys = base_keys & instruct_keys & cpt_keys
+    logger.info(f"Common keys: {len(common_keys)} / {len(cpt_keys)} total")
 
-        # ── Validate shapes ──────────────────────────────────────────
-        if validate_shapes:
-            self._validate_shapes(base_sd, instruct_sd, "base", "instruct")
-            self._validate_shapes(base_sd, cpt_sd, "base", "cpt")
+    # --- Compute merge: cpt + alpha * (instruct - base) ---
 
-        # ── Compute merged weights ───────────────────────────────────
-        logger.info("Computing residual merge (α=%.4f) …", alpha)
-        merged_sd: dict[str, torch.Tensor] = {}
-        skipped_keys: list[str] = []
+    logger.info(f"Computing merge (alpha={alpha})...")
+    merged_state = {}
+    shape_mismatches = []
 
-        for key in tqdm(base_sd.keys(), desc="Merging layers"):
-            if key not in instruct_sd or key not in cpt_sd:
-                # Key missing from one model — copy from CPT
-                logger.debug("Key '%s' missing from instruct or CPT — using CPT weights.", key)
-                merged_sd[key] = cpt_sd.get(key, base_sd[key]).to(self.torch_dtype)
-                skipped_keys.append(key)
-                continue
+    for key in tqdm(common_keys, desc="Merging"):
+        base_w = base_state[key]
+        instruct_w = instruct_state[key]
+        cpt_w = cpt_state[key]
 
-            base_w = base_sd[key].to(self.torch_dtype).to(self.device)
-            inst_w = instruct_sd[key].to(self.torch_dtype).to(self.device)
-            cpt_w = cpt_sd[key].to(self.torch_dtype).to(self.device)
+        # Shape validation - all three must match for arithmetic
+        if base_w.shape != instruct_w.shape or base_w.shape != cpt_w.shape:
+            shape_mismatches.append(key)
+            # Fallback: use CPT weights unchanged (safe default)
+            merged_state[key] = cpt_w
+            continue
 
-            # Task Arithmetic:
-            #   inst_residual = instruct_weights - base_weights
-            #   merged = cpt_weights + (alpha * inst_residual)
-            inst_residual = inst_w - base_w
-            merged_w = cpt_w + (alpha * inst_residual)
+        # Core task arithmetic operation
+        residual = instruct_w.to(dtype) - base_w.to(dtype)
+        merged_state[key] = cpt_w.to(dtype) + alpha * residual
 
-            merged_sd[key] = merged_w.cpu()
-
-            # Free memory
-            del base_w, inst_w, cpt_w, inst_residual, merged_w
-
-        # Free source dicts
-        del base_sd, instruct_sd, cpt_sd
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        # ── Save merged model ────────────────────────────────────────
-        logger.info("Saving merged model to %s …", merge_dir)
-        if save_safetensors:
-            save_file(merged_sd, merge_dir / "model.safetensors")
-        else:
-            torch.save(merged_sd, merge_dir / "pytorch_model.bin")
-
-        # Copy tokenizer + config from CPT model
-        self._copy_config_and_tokenizer(merge_dir)
-
-        # Save merge metadata
-        meta = {
-            "merge_type": "task_arithmetic",
-            "alpha": alpha,
-            "base_model": self.base_model_id,
-            "instruct_model": self.instruct_model_id,
-            "cpt_model": str(self.cpt_model_path),
-            "skipped_keys": skipped_keys,
-            "num_merged_keys": len(merged_sd) - len(skipped_keys),
-        }
-        with open(merge_dir / "merge_config.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
-
-        logger.info(
-            "Merge complete: %d keys merged, %d keys skipped.",
-            len(merged_sd) - len(skipped_keys),
-            len(skipped_keys),
+    if shape_mismatches:
+        logger.warning(
+            f"Shape mismatches (fell back to CPT weights): "
+            f"{len(shape_mismatches)} params: {shape_mismatches[:5]}"
         )
-        return merge_dir
 
-    def sweep(
-        self,
-        alpha_values: list[float],
-        name_template: str = "merged-alpha{alpha}",
-        **merge_kwargs: Any,
-    ) -> list[Path]:
-        """Run merge for multiple alpha values.
+    # Include CPT-only keys (e.g., added during LoRA merge)
+    for key in cpt_keys - common_keys:
+        merged_state[key] = cpt_state[key]
 
-        Parameters
-        ----------
-        alpha_values : list[float]
-            List of alpha values to sweep.
-        name_template : str
-            Template for output directory names.
+    # Free source state dicts
+    del base_state, instruct_state, cpt_state
+    gc.collect()
 
-        Returns
-        -------
-        list[Path]
-            Paths to all merged model directories.
-        """
-        results = []
-        for alpha in alpha_values:
-            name = name_template.format(alpha=alpha)
-            path = self.merge(alpha=alpha, output_name=name, **merge_kwargs)
-            results.append(path)
-        return results
+    # --- Save merged model ---
 
-    def _load_state_dict(self, model_id_or_path: str) -> dict[str, torch.Tensor]:
-        """Load model state dict (supports safetensors and HF format)."""
-        path = Path(model_id_or_path)
+    logger.info(f"Saving merged model to {output_path}")
 
-        # Try loading from safetensors first (local path)
-        if path.is_dir():
-            safetensors_files = list(path.glob("*.safetensors"))
-            if safetensors_files:
-                state_dict = {}
-                for sf in safetensors_files:
-                    state_dict.update(load_file(sf, device="cpu"))
-                return state_dict
+    # Load model architecture from CPT checkpoint to get correct config
+    cpt_model = AutoModelForCausalLM.from_pretrained(
+        cpt_model_path, torch_dtype=dtype, device_map=device
+    )
+    cpt_model.load_state_dict(merged_state, strict=False)
+    cpt_model.save_pretrained(output_path)
+    del cpt_model
+    gc.collect()
 
-        # Fallback: load via transformers
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id_or_path,
-            torch_dtype=self.torch_dtype,
-            device_map="cpu",
-            trust_remote_code=True,
+    # Copy tokenizer (unchanged by merge)
+    tokenizer = AutoTokenizer.from_pretrained(cpt_model_path)
+    tokenizer.save_pretrained(output_path)
+
+    # Save metadata for reproducibility
+    elapsed = time.time() - start_time
+    metadata = {
+        "method": "residual_merge_task_arithmetic",
+        "formula": "cpt_weights + alpha * (instruct_weights - base_weights)",
+        "base_model_id": base_model_id,
+        "instruct_model_id": instruct_model_id,
+        "cpt_model_path": str(cpt_model_path),
+        "alpha": alpha,
+        "num_params_merged": len(common_keys),
+        "num_shape_mismatches": len(shape_mismatches),
+        "shape_mismatch_keys": shape_mismatches[:20],
+        "elapsed_seconds": elapsed,
+        "dtype": str(dtype),
+    }
+    with open(output_path / "merge_metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info(f"Merge complete in {elapsed:.1f}s (alpha={alpha})")
+    return output_path
+
+
+def alpha_sweep(
+    base_model_id: str,
+    instruct_model_id: str,
+    cpt_model_path: str,
+    alphas: list[float],
+    output_dir: str,
+    device: str = "cpu",
+) -> list[dict[str, Any]]:
+    """Run merge for multiple alpha values to find optimal scaling.
+
+    Each alpha produces a separate model. After sweep, evaluate all models
+    on benchmarks to find the best alpha (typically between 0.7 and 1.0).
+
+    Args:
+        base_model_id: Original base model ID.
+        instruct_model_id: Original instruct model ID.
+        cpt_model_path: Path to CPT checkpoint.
+        alphas: List of alpha values to try.
+        output_dir: Parent directory for all merged models.
+        device: Computation device.
+
+    Returns:
+        List of {"alpha": float, "path": str} for each completed merge.
+    """
+    output_dir = Path(output_dir)
+    results = []
+
+    for alpha in alphas:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Alpha sweep: {alpha}")
+        logger.info(f"{'='*60}")
+
+        path = compute_residual_merge(
+            base_model_id=base_model_id,
+            instruct_model_id=instruct_model_id,
+            cpt_model_path=cpt_model_path,
+            alpha=alpha,
+            output_dir=str(output_dir),
+            device=device,
         )
-        sd = model.state_dict()
-        del model
-        gc.collect()
-        return sd
+        results.append({"alpha": alpha, "path": str(path)})
 
-    def _validate_shapes(
-        self,
-        sd_a: dict[str, torch.Tensor],
-        sd_b: dict[str, torch.Tensor],
-        name_a: str,
-        name_b: str,
-    ) -> None:
-        """Validate that matching keys have the same tensor shapes."""
-        mismatches = []
-        for key in sd_a:
-            if key in sd_b and sd_a[key].shape != sd_b[key].shape:
-                mismatches.append(
-                    f"  {key}: {name_a}={sd_a[key].shape} vs {name_b}={sd_b[key].shape}"
-                )
-        if mismatches:
-            msg = f"Shape mismatches between {name_a} and {name_b}:\n" + "\n".join(mismatches)
-            raise ValueError(msg)
-        logger.info("Shape validation passed: %s ↔ %s (%d keys)", name_a, name_b, len(sd_a))
+    # Save sweep summary for easy lookup
+    with open(output_dir / "sweep_results.json", "w") as f:
+        json.dump(results, f, indent=2)
 
-    def _copy_config_and_tokenizer(self, merge_dir: Path) -> None:
-        """Copy tokenizer and model config from the CPT checkpoint."""
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                self.cpt_model_path, trust_remote_code=True
-            )
-            tokenizer.save_pretrained(merge_dir)
-        except Exception as e:
-            logger.warning("Could not copy tokenizer from CPT: %s", e)
-            # Fallback to base model tokenizer
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    self.base_model_id, trust_remote_code=True
-                )
-                tokenizer.save_pretrained(merge_dir)
-            except Exception as e2:
-                logger.error("Failed to save any tokenizer: %s", e2)
+    return results
 
 
-# ──────────────────────────────────────────────────────────────────────
-# CLI entry point
-# ──────────────────────────────────────────────────────────────────────
-
-def main() -> None:
+def main():
+    """CLI entry point for residual merge."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Gemma 4 — Residual Merge (Task Arithmetic)")
-    parser.add_argument("--config", type=str, default="configs/merge.yml", help="YAML config path")
-    parser.add_argument(
-        "--alpha",
-        type=str,
-        default=None,
-        help="Comma-separated alpha values (overrides config). E.g. 0.5,0.7,0.9,1.0",
+    parser = argparse.ArgumentParser(
+        description="Run Residual Merge (Task Arithmetic)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single alpha
+  python -m src.train.residual_merge \\
+      --base-model google/gemma-4-E4B \\
+      --instruct-model google/gemma-4-E4B-it \\
+      --cpt-model outputs/cpt_main/final \\
+      --alpha 1.0
+
+  # Alpha sweep
+  python -m src.train.residual_merge \\
+      --base-model google/gemma-4-E4B \\
+      --instruct-model google/gemma-4-E4B-it \\
+      --cpt-model outputs/cpt_main/final \\
+      --alpha 0.5 0.7 0.8 0.9 1.0 1.1 1.2
+        """,
     )
-    parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument("--base-model", type=str, required=True, help="Base model HF ID")
+    parser.add_argument("--instruct-model", type=str, required=True, help="Instruct model HF ID")
+    parser.add_argument("--cpt-model", type=str, required=True, help="Path to CPT model")
+    parser.add_argument(
+        "--alpha", type=float, nargs="+",
+        default=[0.5, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
+        help="Alpha value(s) for instruction residual scaling",
+    )
+    parser.add_argument("--output-dir", type=str, default="outputs/residual_merge")
+    parser.add_argument("--device", type=str, default="cpu", help="cpu or cuda")
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    merge_cfg = config.get("merge", config)
-
-    if args.dry_run:
-        print(json.dumps(config, indent=2, default=str))
-        sys.exit(0)
-
-    # Alpha values: CLI override or from config
-    if args.alpha:
-        alpha_values = [float(a.strip()) for a in args.alpha.split(",")]
+    if len(args.alpha) == 1:
+        compute_residual_merge(
+            base_model_id=args.base_model,
+            instruct_model_id=args.instruct_model,
+            cpt_model_path=args.cpt_model,
+            alpha=args.alpha[0],
+            output_dir=args.output_dir,
+            device=args.device,
+        )
     else:
-        alpha_values = merge_cfg.get("alpha_values", [1.0])
-
-    set_global_seed(42)
-
-    merger = ResidualMerger(
-        base_model_id=merge_cfg["base_model_id"],
-        instruct_model_id=merge_cfg["instruct_model_id"],
-        cpt_model_path=merge_cfg["cpt_model_path"],
-        output_dir=merge_cfg.get("output_dir", "./output/merged"),
-        torch_dtype=merge_cfg.get("torch_dtype", "bfloat16"),
-        device=merge_cfg.get("device", "cpu"),
-    )
-
-    name_template = merge_cfg.get("output_name_template", "merged-alpha{alpha}")
-    paths = merger.sweep(
-        alpha_values=alpha_values,
-        name_template=name_template,
-        validate_shapes=merge_cfg.get("validate_shapes", True),
-        save_safetensors=merge_cfg.get("save_safetensors", True),
-    )
-
-    logger.info("All merges complete:")
-    for p in paths:
-        logger.info("  → %s", p)
+        alpha_sweep(
+            base_model_id=args.base_model,
+            instruct_model_id=args.instruct_model,
+            cpt_model_path=args.cpt_model,
+            alphas=args.alpha,
+            output_dir=args.output_dir,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":

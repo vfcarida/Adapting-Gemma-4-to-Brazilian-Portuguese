@@ -1,45 +1,29 @@
-"""
-src/eval/tasks/assin2_sts.py
-────────────────────────────
-ASSIN2-STS — Semantic Textual Similarity (Portuguese).
-Regression task, measured by Pearson correlation.
-"""
+"""ASSIN2-STS task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "assin2_sts"
-    dataset_id: str = "nilc-nlp/assin2"
-    dataset_split: str = "test"
-    metric: str = "pearson"
-    num_fewshot: int = 15
-    description: str = "ASSIN2-STS — Semantic Textual Similarity"
-
-    premise_column: str = "premise"
-    hypothesis_column: str = "hypothesis"
-    score_column: str = "relatedness_score"
-    score_range: tuple[float, float] = (1.0, 5.0)
-
-    output_type: str = "generate_until"
-    doc_to_text: str = (
-        "Sentença 1: {{premise}}\n"
-        "Sentença 2: {{hypothesis}}\n"
-        "Similaridade semântica (1-5):"
-    )
-    doc_to_target: str = "{{relatedness_score}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/nilc-nlp/assin2",
-        "language": "pt-BR",
-        "domain": "STS",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class Assin2STSTask(BaseTask):
+    """ASSIN2 Semantic Textual Similarity."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "assin2")
+        data = self._load_from_hub(hub_id, split="test")
+
+        examples = []
+        for item in data:
+            example = {
+                "sentence1": item.get("premise", item.get("sentence1", "")),
+                "sentence2": item.get("hypothesis", item.get("sentence2", "")),
+                "score": float(item.get("relatedness_score", item.get("similarity", 3.0))),
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> float:
+        return example["score"]
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        return self._extract_number(raw_prediction)

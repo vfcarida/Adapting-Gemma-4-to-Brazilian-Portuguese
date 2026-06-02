@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+outputs/
+reports/figures/
+/data/          # Root /data/ only — NOT src/data/
+!src/data/
+!tests/fixtures/
+*.pt
+*.bin
+*.safetensors
+.env
+.venv/
+venv/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+wandb/
+*.log
+.cache/

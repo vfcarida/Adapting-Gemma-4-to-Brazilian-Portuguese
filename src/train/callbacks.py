@@ -1,177 +1,202 @@
+"""Custom training callbacks for logging, monitoring, and early stopping.
+
+This module provides HuggingFace TrainerCallback implementations that
+integrate with the project's local logging system. These callbacks run
+during training to track:
+
+- Throughput: tokens/sec, step timing (ThroughputCallback)
+- Metrics: loss, learning rate, gradients (LocalMetricsCallback)
+- Memory: GPU VRAM usage over time (GPUMemoryCallback)
+- Convergence: early stopping on loss plateau (EarlyStoppingOnPlateau)
+
+All numeric metrics are logged to a local JSONL file via MetricsLogger,
+providing a W&B-free alternative for experiment tracking. The JSONL format
+is append-only and easily parseable for post-hoc analysis.
+
+Usage:
+    from src.train.callbacks import ThroughputCallback, LocalMetricsCallback
+    from src.utils.logging_utils import MetricsLogger
+
+    logger = MetricsLogger("outputs/train_log.jsonl")
+    trainer = Trainer(
+        ...,
+        callbacks=[ThroughputCallback(logger), LocalMetricsCallback(logger)],
+    )
 """
-src/train/callbacks.py
-──────────────────────
-Custom HuggingFace ``TrainerCallback`` subclasses for enhanced
-training observability.
 
-Callbacks:
-  • JSONLLoggingCallback    — writes metrics to local JSONL file
-  • PerplexityCallback      — computes validation perplexity
-  • EarlyStoppingWithPatience — stop on val loss plateau
-"""
+import time
 
-from __future__ import annotations
+import torch
+from transformers import TrainerCallback
 
-import json
-import math
-from pathlib import Path
-from typing import Any
-
-from transformers import (
-    TrainerCallback,
-    TrainerControl,
-    TrainerState,
-    TrainingArguments,
-)
-
-from src.utils.logging_utils import JSONLWriter, get_logger
+from src.utils.logging_utils import MetricsLogger, get_logger
 
 logger = get_logger(__name__)
 
 
-class JSONLLoggingCallback(TrainerCallback):
-    """Write training metrics to a local JSONL file.
+class ThroughputCallback(TrainerCallback):
+    """Track training throughput (tokens/sec, samples/sec).
 
-    Each log event is appended as a JSON line with all metrics from
-    the Trainer's log history.
+    Measures wall-clock time per training step and estimates token
+    throughput based on batch size and sequence length. Logs every
+    `logging_steps` to avoid I/O overhead on every step.
 
-    Parameters
-    ----------
-    log_dir : str | Path
-        Directory for the JSONL output file.
-    filename : str
-        Name of the JSONL file.
+    This is essential for:
+    - Comparing hardware configurations (A100 vs H100)
+    - Detecting I/O bottlenecks (throughput drops)
+    - Estimating total training time
+
+    Args:
+        metrics_logger: MetricsLogger instance for persisting metrics.
     """
 
-    def __init__(self, log_dir: str | Path, filename: str = "train_metrics.jsonl") -> None:
-        self._writer = JSONLWriter(log_dir, filename)
+    def __init__(self, metrics_logger: MetricsLogger):
+        self.metrics_logger = metrics_logger
+        self.step_start_time = None
+        self.total_tokens = 0
 
-    def on_log(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        logs: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        if logs is None:
+    def on_step_begin(self, args, state, control, **kwargs):
+        """Record step start time for elapsed computation."""
+        self.step_start_time = time.time()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Compute and log throughput at logging intervals."""
+        if self.step_start_time is None:
             return
-        self._writer.write(
-            step=state.global_step,
-            epoch=state.epoch,
-            **{k: v for k, v in logs.items() if isinstance(v, (int, float, str))},
-        )
+
+        elapsed = time.time() - self.step_start_time
+        # Effective batch size includes gradient accumulation
+        batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
+        # Estimate tokens: assumes packed sequences fill max_seq_length
+        seq_length = getattr(args, "max_seq_length", 8192)
+        tokens_per_step = batch_size * seq_length
+        self.total_tokens += tokens_per_step
+
+        # Only log at intervals to reduce I/O overhead
+        if state.global_step % args.logging_steps == 0:
+            throughput = tokens_per_step / max(elapsed, 1e-6)
+            self.metrics_logger.log(
+                {
+                    "throughput_tokens_per_sec": throughput,
+                    "step_time_sec": elapsed,
+                    "total_tokens_processed": self.total_tokens,
+                },
+                step=state.global_step,
+            )
 
 
-class PerplexityCallback(TrainerCallback):
-    """Compute and log validation perplexity at each evaluation step.
+class LocalMetricsCallback(TrainerCallback):
+    """Log all training metrics to local JSONL file.
 
-    Perplexity is computed as ``exp(eval_loss)`` from the Trainer's
-    reported evaluation loss.
+    Captures every metric emitted by the Trainer (loss, learning rate,
+    gradient norm, etc.) and persists them locally. This provides a
+    complete training record independent of external services like W&B.
 
-    Parameters
-    ----------
-    log_dir : str | Path
-        Directory for perplexity JSONL log.
+    Also captures evaluation metrics when on_evaluate fires.
+
+    Args:
+        metrics_logger: MetricsLogger instance for persisting metrics.
     """
 
-    def __init__(self, log_dir: str | Path | None = None) -> None:
-        self._writer = JSONLWriter(log_dir, "perplexity.jsonl") if log_dir else None
+    def __init__(self, metrics_logger: MetricsLogger):
+        self.metrics_logger = metrics_logger
 
-    def on_evaluate(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        metrics: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Persist numeric training metrics from each log event."""
+        if logs:
+            # Filter to numeric values only (skip strings like "epoch")
+            self.metrics_logger.log(
+                {k: v for k, v in logs.items() if isinstance(v, (int, float))},
+                step=state.global_step,
+            )
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Persist evaluation metrics with an 'eval' event marker."""
+        if metrics:
+            self.metrics_logger.log(
+                {"event": "eval", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))}},
+                step=state.global_step,
+            )
+
+
+class EarlyStoppingOnPlateau(TrainerCallback):
+    """Early stopping when validation loss stops improving.
+
+    Monitors eval_loss and stops training if no improvement is seen
+    for `patience` consecutive evaluations. "Improvement" is defined
+    as a decrease greater than `threshold` from the best observed loss.
+
+    This prevents wasting compute on training that has converged or
+    is beginning to overfit.
+
+    Args:
+        patience: Number of evaluations to wait before stopping.
+        threshold: Minimum improvement to reset patience counter.
+
+    Example:
+        trainer = Trainer(
+            ...,
+            callbacks=[EarlyStoppingOnPlateau(patience=5, threshold=0.001)],
+        )
+    """
+
+    def __init__(self, patience: int = 5, threshold: float = 0.001):
+        self.patience = patience
+        self.threshold = threshold
+        self.best_loss = float("inf")
+        self.wait = 0
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Check if loss has improved; stop training if patience exhausted."""
         if metrics is None:
             return
 
         eval_loss = metrics.get("eval_loss")
-        if eval_loss is not None and not math.isnan(eval_loss):
-            perplexity = math.exp(min(eval_loss, 100))  # clamp to avoid overflow
-            metrics["eval_perplexity"] = perplexity
-            logger.info(
-                "Step %d — eval_loss=%.4f  perplexity=%.2f",
-                state.global_step,
-                eval_loss,
-                perplexity,
-            )
-            if self._writer:
-                self._writer.write(
-                    step=state.global_step,
-                    epoch=state.epoch,
-                    eval_loss=eval_loss,
-                    perplexity=perplexity,
-                )
-
-
-class EarlyStoppingWithPatience(TrainerCallback):
-    """Early stopping based on validation loss plateau.
-
-    Stops training if the validation loss does not improve for
-    ``patience`` consecutive evaluation steps.
-
-    Parameters
-    ----------
-    patience : int
-        Number of evaluation steps to wait for improvement.
-    min_delta : float
-        Minimum absolute improvement to consider as progress.
-    metric : str
-        Metric to monitor (default: ``eval_loss``).
-    """
-
-    def __init__(
-        self,
-        patience: int = 5,
-        min_delta: float = 0.0,
-        metric: str = "eval_loss",
-    ) -> None:
-        self.patience = patience
-        self.min_delta = min_delta
-        self.metric = metric
-        self._best_value: float | None = None
-        self._wait: int = 0
-
-    def on_evaluate(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        metrics: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        if metrics is None:
+        if eval_loss is None:
             return
 
-        current = metrics.get(self.metric)
-        if current is None:
-            return
-
-        if self._best_value is None or current < self._best_value - self.min_delta:
-            self._best_value = current
-            self._wait = 0
-            logger.info(
-                "EarlyStopping: %s improved to %.6f (patience reset).",
-                self.metric,
-                current,
-            )
+        # Check for meaningful improvement (must beat best by threshold)
+        if eval_loss < self.best_loss - self.threshold:
+            self.best_loss = eval_loss
+            self.wait = 0
         else:
-            self._wait += 1
-            logger.info(
-                "EarlyStopping: no improvement for %d/%d steps (%s=%.6f, best=%.6f).",
-                self._wait,
-                self.patience,
-                self.metric,
-                current,
-                self._best_value,
-            )
-            if self._wait >= self.patience:
-                logger.warning(
-                    "EarlyStopping: patience exhausted (%d steps). Stopping training.",
-                    self.patience,
+            self.wait += 1
+            if self.wait >= self.patience:
+                logger.info(
+                    f"Early stopping triggered: no improvement for {self.patience} evals. "
+                    f"Best loss: {self.best_loss:.4f}"
                 )
                 control.should_training_stop = True
+
+
+class GPUMemoryCallback(TrainerCallback):
+    """Log GPU memory usage periodically during training.
+
+    Tracks both allocated memory (actively used by tensors) and reserved
+    memory (held by the CUDA allocator). This helps identify:
+    - Memory leaks (monotonically increasing allocation)
+    - OOM risk (approaching GPU capacity)
+    - Optimal batch size tuning
+
+    Logs every 10 * logging_steps to avoid excessive overhead from
+    CUDA memory queries.
+
+    Args:
+        metrics_logger: MetricsLogger instance for persisting metrics.
+    """
+
+    def __init__(self, metrics_logger: MetricsLogger):
+        self.metrics_logger = metrics_logger
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Log GPU memory at reduced frequency (every 10x logging_steps)."""
+        if state.global_step % (args.logging_steps * 10) == 0 and torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1e9  # Convert bytes to GB
+            reserved = torch.cuda.memory_reserved() / 1e9
+            self.metrics_logger.log(
+                {
+                    "gpu_memory_allocated_gb": allocated,
+                    "gpu_memory_reserved_gb": reserved,
+                },
+                step=state.global_step,
+            )

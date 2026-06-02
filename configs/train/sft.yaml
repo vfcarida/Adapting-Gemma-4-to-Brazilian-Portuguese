@@ -1,0 +1,75 @@
+experiment:
+  name: "sft_e4b_ptbr"
+  description: "SFT on CPT checkpoint with Portuguese instruction data"
+  seed: 42
+
+model_config: "configs/model/gemma4_e4b.yaml"
+base_checkpoint: "outputs/cpt_main/final"  # CPT output
+
+training:
+  method: "sft"
+  use_lora: true
+  num_train_epochs: 3
+  max_steps: -1
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+
+  learning_rate: 1.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  task_type: "CAUSAL_LM"
+  bias: "none"
+
+sft:
+  # Instruction data sources (in priority order)
+  datasets:
+    - hub_id: "Se7enB/Gemma-Instruct-Portuguese"
+      weight: 0.5
+    - hub_id: "cnmoro/Se7enB-Gemma-Instruct-Portuguese-translated-v2"
+      weight: 0.3
+    - hub_id: null  # Placeholder for custom synthetic data
+      path: "data/synthetic_ptbr_instructions.jsonl"
+      weight: 0.2
+
+  max_seq_length: 4096
+  packing: false
+  train_on_completions_only: true
+  use_think_tokens: false  # Control thinking mode
+  response_template: "<start_of_turn>model\n"
+
+  # Chat template format
+  format: "gemma4"
+  system_message: null  # Gemma 4 does not use system messages
+
+data_mix:
+  pt_ratio: 0.8
+  en_ratio: 0.2
+  include_translation_pairs: true
+
+checkpointing:
+  save_steps: 200
+  save_total_limit: 5
+
+logging:
+  logging_steps: 10
+  report_to: ["json"]
+  log_file: "outputs/sft/train_log.jsonl"
+
+output:
+  output_dir: "outputs/sft"
+  overwrite_output_dir: false

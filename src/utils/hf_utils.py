@@ -1,219 +1,202 @@
-"""
-src/utils/hf_utils.py
-─────────────────────
-Hugging Face Hub authentication, model/tokenizer loading, and safe
-LoRA configuration builder with hardcoded multimodal exclusion.
+"""Utilitários de carregamento de modelos e tokenizers HuggingFace.
+
+Este módulo centraliza toda a lógica de carregamento de modelos Gemma 4,
+incluindo:
+- Carregamento de tokenizer com configurações adequadas
+- Carregamento para treino (com/sem quantização)
+- Carregamento para inferência
+- Freeze de módulos multimodais (modo text-only)
+- Medição de tamanho do modelo
+- Suporte a apply_chat_template via tokenizer
+
+IMPORTANTE: Gemma 4 é multimodal. Para CPT/SFT em texto puro, devemos
+congelar os encoders visuais e o projetor multimodal.
 """
 
-from __future__ import annotations
-
-import os
-import re
 from typing import Any
 
 import torch
-from peft import LoraConfig, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# ──────────────────────────────────────────────────────────────────────
-# SAFETY: Gemma 4 multimodal module exclusion
-# ──────────────────────────────────────────────────────────────────────
-# Gemma 4 contains Gemma4ClippableLinear layers in vision/audio
-# encoders.  PEFT crashes if LoRA tries to target these.  We NEVER
-# use target_modules="all-linear"; instead we whitelist only the
-# standard language-model projection layers.
-# ──────────────────────────────────────────────────────────────────────
 
-SAFE_LORA_TARGET_MODULES: list[str] = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-]
+def load_tokenizer(model_id: str, **kwargs) -> AutoTokenizer:
+    """Carrega tokenizer com configurações adequadas para Gemma 4.
 
-# Regex patterns that identify multimodal sub-modules to exclude
-_MULTIMODAL_EXCLUSION_PATTERNS: list[str] = [
-    r".*vision_tower.*",
-    r".*audio_tower.*",
-    r".*multi_modal_projector.*",
-    r".*image_adapter.*",
-    r".*audio_adapter.*",
-]
+    Usa apply_chat_template quando disponível no tokenizer carregado.
 
+    Args:
+        model_id: ID do modelo no HF Hub ou caminho local.
 
-def authenticate_hf(token: str | None = None) -> None:
-    """Authenticate with the Hugging Face Hub.
-
-    Reads the token from the ``HF_TOKEN`` environment variable if
-    *token* is not provided.
-
-    .. note::
-       This is **required** for gated models (Gemma 4) and gated
-       datasets (Aurora-PT).
+    Returns:
+        AutoTokenizer configurado.
     """
-    token = token or os.environ.get("HF_TOKEN")
-    if not token:
-        logger.warning(
-            "HF_TOKEN not set — you may not be able to access gated models / datasets."
-        )
-        return
-    try:
-        from huggingface_hub import login
-
-        login(token=token, add_to_git_credential=False)
-        logger.info("Authenticated with Hugging Face Hub.")
-    except ImportError:
-        # Fallback: set env var so transformers picks it up
-        os.environ["HF_TOKEN"] = token
-        logger.info("Set HF_TOKEN in environment (huggingface_hub not installed).")
-
-
-def load_model_and_tokenizer(
-    model_id: str,
-    torch_dtype: str | torch.dtype = "bfloat16",
-    device_map: str = "auto",
-    attn_implementation: str = "sdpa",
-    trust_remote_code: bool = True,
-    quantization_config: dict[str, Any] | None = None,
-    cache_dir: str | None = None,
-) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
-    """Load a CausalLM model and its tokenizer with sensible defaults.
-
-    Parameters
-    ----------
-    model_id : str
-        HuggingFace Hub ID or local path.
-    torch_dtype : str | torch.dtype
-        Weight precision.  Accepts ``"bfloat16"``, ``"float16"``, etc.
-    device_map : str
-        Device placement (``"auto"``, ``"cpu"``, ``"cuda:0"``).
-    attn_implementation : str
-        ``"sdpa"`` (default) or ``"flash_attention_2"``.
-    trust_remote_code : bool
-        Accept remote code in the model repo.
-    quantization_config : dict | None
-        If provided, passed as ``BitsAndBytesConfig``.
-    cache_dir : str | None
-        Override default HF cache directory.
-
-    Returns
-    -------
-    tuple[AutoModelForCausalLM, AutoTokenizer]
-    """
-    # Resolve dtype string → torch.dtype
-    dtype_map = {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "float32": torch.float32,
-    }
-    if isinstance(torch_dtype, str):
-        torch_dtype = dtype_map.get(torch_dtype, torch.bfloat16)
-
-    model_kwargs: dict[str, Any] = {
-        "torch_dtype": torch_dtype,
-        "device_map": device_map,
-        "attn_implementation": attn_implementation,
-        "trust_remote_code": trust_remote_code,
-    }
-    if cache_dir:
-        model_kwargs["cache_dir"] = cache_dir
-    if quantization_config:
-        model_kwargs["quantization_config"] = BitsAndBytesConfig(**quantization_config)
-
-    logger.info("Loading model: %s (dtype=%s, attn=%s)", model_id, torch_dtype, attn_implementation)
-    model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
-
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
-        trust_remote_code=trust_remote_code,
-        cache_dir=cache_dir,
+        use_fast=True,
+        padding_side="right",
+        trust_remote_code=True,
+        **kwargs,
     )
-    # Ensure pad token is set (common issue with Gemma tokenizers)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        model.config.pad_token_id = tokenizer.eos_token_id
-
-    logger.info(
-        "Model loaded: %s params, vocab_size=%d",
-        f"{model.num_parameters():,}",
-        len(tokenizer),
-    )
-    return model, tokenizer
+    return tokenizer
 
 
-def build_lora_config(
-    peft_cfg: dict[str, Any],
-    model: AutoModelForCausalLM | None = None,
-) -> LoraConfig:
-    """Build a LoRA config with safe target modules for Gemma 4.
+def load_model_for_training(
+    model_id: str,
+    use_lora: bool = False,
+    quantize: bool = False,
+    model_config: dict[str, Any] | None = None,
+) -> AutoModelForCausalLM:
+    """Carrega modelo para treinamento com opções de quantização e text-only.
 
-    This function **always** uses the hardcoded safe target list and
-    verifies that no multimodal modules leak through.
+    Se o model_config indica text_only_mode=true, congela automaticamente
+    os módulos de visão (vision_encoder, multi_modal_projector).
 
-    Parameters
-    ----------
-    peft_cfg : dict
-        PEFT configuration from YAML (r, lora_alpha, lora_dropout, etc.).
-    model : AutoModelForCausalLM | None
-        If provided, validates that target modules exist in the model
-        and that multimodal modules are excluded.
+    Args:
+        model_id: ID do modelo ou caminho local.
+        use_lora: Se True, modelo será usado com PEFT (não move para GPU diretamente).
+        quantize: Se True, aplica quantização 4-bit (BnB).
+        model_config: Dict com configurações do modelo.
 
-    Returns
-    -------
-    LoraConfig
+    Returns:
+        Modelo carregado e pronto para treino.
     """
-    target_modules = peft_cfg.get("target_modules", SAFE_LORA_TARGET_MODULES)
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "torch_dtype": torch.bfloat16,
+    }
 
-    # Safety: never allow "all-linear"
-    if target_modules == "all-linear":
-        logger.warning(
-            "target_modules='all-linear' is UNSAFE for Gemma 4. "
-            "Overriding with safe target list."
+    if model_config:
+        model_cfg = model_config.get("model", {})
+        if "attn_implementation" in model_cfg:
+            kwargs["attn_implementation"] = model_cfg["attn_implementation"]
+
+    if quantize:
+        quant_cfg = model_config.get("quantization", {}) if model_config else {}
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=quant_cfg.get("load_in_4bit", True),
+            bnb_4bit_compute_dtype=getattr(
+                torch, quant_cfg.get("bnb_4bit_compute_dtype", "bfloat16")
+            ),
+            bnb_4bit_quant_type=quant_cfg.get("bnb_4bit_quant_type", "nf4"),
+            bnb_4bit_use_double_quant=quant_cfg.get("bnb_4bit_use_double_quant", True),
         )
-        target_modules = SAFE_LORA_TARGET_MODULES
 
-    # Validate against multimodal modules if model is provided
-    if model is not None:
-        _validate_no_multimodal_targets(model, target_modules)
+    logger.info(f"Carregando modelo: {model_id} (quantize={quantize})")
+    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
 
-    config = LoraConfig(
-        r=peft_cfg.get("r", 64),
-        lora_alpha=peft_cfg.get("lora_alpha", 128),
-        lora_dropout=peft_cfg.get("lora_dropout", 0.05),
-        bias=peft_cfg.get("bias", "none"),
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=target_modules,
-    )
-    logger.info(
-        "LoRA config: r=%d, alpha=%d, dropout=%.2f, targets=%s",
-        config.r,
-        config.lora_alpha,
-        config.lora_dropout,
-        config.target_modules,
-    )
-    return config
+    if not quantize and not use_lora:
+        model = model.to(torch.bfloat16)
+
+    # Modo text-only: congela componentes multimodais
+    if model_config and model_config.get("model", {}).get("text_only_mode", False):
+        _freeze_multimodal_modules(model)
+
+    return model
 
 
-def _validate_no_multimodal_targets(
-    model: AutoModelForCausalLM,
-    target_modules: list[str],
-) -> None:
-    """Ensure no target module name matches multimodal exclusion patterns."""
-    for name, _ in model.named_modules():
-        for pattern in _MULTIMODAL_EXCLUSION_PATTERNS:
-            if re.match(pattern, name):
-                # Check if any target module would match this path
-                for target in target_modules:
-                    if target in name:
-                        raise ValueError(
-                            f"LoRA target '{target}' would match multimodal module "
-                            f"'{name}'. This will crash PEFT on Gemma4ClippableLinear. "
-                            f"Use explicit target_modules={SAFE_LORA_TARGET_MODULES}"
-                        )
+def _freeze_multimodal_modules(model: torch.nn.Module) -> None:
+    """Congela módulos multimodais para treino text-only.
+
+    Gemma 4 pode incluir vision_tower, multi_modal_projector, etc.
+    Em CPT/SFT textual, estes devem ficar congelados para:
+    1. Reduzir uso de memória (gradientes não computados)
+    2. Evitar corrupção da capacidade visual
+    3. Acelerar o treino
+
+    Args:
+        model: Modelo carregado.
+    """
+    frozen_count = 0
+    # Padrões de nomes de módulos multimodais em modelos Gemma 4
+    multimodal_patterns = [
+        "vision_tower", "vision_encoder", "visual",
+        "multi_modal_projector", "mm_projector",
+        "image_encoder", "img_", "pixel",
+    ]
+
+    for name, param in model.named_parameters():
+        if any(pattern in name.lower() for pattern in multimodal_patterns):
+            param.requires_grad = False
+            frozen_count += 1
+
+    if frozen_count > 0:
+        logger.info(f"Modo text-only: {frozen_count} parâmetros multimodais congelados")
+    else:
+        logger.info("Nenhum módulo multimodal encontrado (modelo pode ser text-only nativo)")
+
+
+def load_model_for_inference(
+    model_id: str,
+    device: str = "auto",
+    quantize: bool = False,
+) -> AutoModelForCausalLM:
+    """Carrega modelo para inferência (eval mode, device_map auto).
+
+    Args:
+        model_id: ID do modelo ou caminho local.
+        device: Mapeamento de dispositivo ("auto" distribui automaticamente).
+        quantize: Se True, aplica quantização 4-bit.
+
+    Returns:
+        Modelo em modo avaliação.
+    """
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "torch_dtype": torch.bfloat16,
+        "device_map": device,
+    }
+
+    if quantize:
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    model.eval()
+    return model
+
+
+def get_model_size_mb(model: torch.nn.Module) -> float:
+    """Calcula tamanho do modelo em MB (apenas parâmetros)."""
+    param_size = sum(p.nelement() * p.element_size() for p in model.parameters())
+    return param_size / (1024 * 1024)
+
+
+def get_trainable_params_info(model: torch.nn.Module) -> dict[str, Any]:
+    """Retorna informações sobre parâmetros treináveis vs congelados.
+
+    Útil para verificar que PEFT e freeze multimodal estão corretos.
+
+    Returns:
+        Dict com total_params, trainable_params, frozen_params, trainable_pct.
+    """
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen = total - trainable
+    return {
+        "total_params": total,
+        "trainable_params": trainable,
+        "frozen_params": frozen,
+        "trainable_pct": 100.0 * trainable / max(total, 1),
+    }
+
+
+def supports_chat_template(tokenizer) -> bool:
+    """Verifica se o tokenizer suporta apply_chat_template.
+
+    Args:
+        tokenizer: Tokenizer carregado.
+
+    Returns:
+        True se chat_template está disponível.
+    """
+    return hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None

@@ -1,195 +1,254 @@
-"""
-src/data/instruction_data_builder.py
-────────────────────────────────────
-Format instruction datasets into Gemma 4 official chat template.
+"""Build instruction datasets for SFT with proper chat formatting."""
 
-Uses ``tokenizer.apply_chat_template()`` with proper turn tokens and
-applies label masking so loss is computed only on assistant turns.
-Supports ``enable_thinking=True/False`` for think-mode variants.
-
-.. important::
-    This module is for **structured instruction data only** — never
-    for raw Aurora-PT text (which uses CausalLM packed sequences).
-"""
-
-from __future__ import annotations
-
+from pathlib import Path
 from typing import Any
 
-import torch
-from datasets import Dataset, load_dataset
-from transformers import PreTrainedTokenizerBase
+from datasets import Dataset, concatenate_datasets, load_dataset
 
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Label ignore index for CrossEntropy (standard PyTorch convention)
-IGNORE_INDEX = -100
+# Gemma 4 chat template
+GEMMA4_USER_PREFIX = "<start_of_turn>user\n"
+GEMMA4_USER_SUFFIX = "<end_of_turn>\n"
+GEMMA4_MODEL_PREFIX = "<start_of_turn>model\n"
+GEMMA4_MODEL_SUFFIX = "<end_of_turn>\n"
+
+
+def format_gemma4_chat(
+    messages: list[dict[str, str]],
+    add_generation_prompt: bool = False,
+    use_think: bool = False,
+) -> str:
+    """Format messages using Gemma 4 chat template.
+
+    Args:
+        messages: List of {"role": "user"|"model", "content": "..."} dicts
+        add_generation_prompt: Whether to add model turn prefix at end
+        use_think: Whether to add <think> token after model prefix
+    """
+    formatted = "<bos>"
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+
+        if role == "user":
+            formatted += f"{GEMMA4_USER_PREFIX}{content}{GEMMA4_USER_SUFFIX}"
+        elif role in ("model", "assistant"):
+            if use_think:
+                formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
+            else:
+                formatted += f"{GEMMA4_MODEL_PREFIX}{content}{GEMMA4_MODEL_SUFFIX}"
+
+    if add_generation_prompt:
+        if use_think:
+            formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n"
+        else:
+            formatted += GEMMA4_MODEL_PREFIX
+
+    return formatted
 
 
 class InstructionDataBuilder:
-    """Build tokenized instruction datasets with label masking.
+    """Build instruction-tuning datasets from various sources."""
 
-    Parameters
-    ----------
-    tokenizer : PreTrainedTokenizerBase
-        Gemma 4 tokenizer (must have ``apply_chat_template``).
-    max_seq_len : int
-        Maximum sequence length.
-    enable_thinking : bool
-        If ``True``, enables thinking mode in the chat template.
-    """
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+        self.sft_cfg = config.get("sft", {})
+        self.use_think = self.sft_cfg.get("use_think_tokens", False)
+        self.max_seq_length = self.sft_cfg.get("max_seq_length", 4096)
 
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        max_seq_len: int = 4096,
-        enable_thinking: bool = False,
-    ) -> None:
-        self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
-        self.enable_thinking = enable_thinking
+    def load_datasets(self) -> Dataset:
+        """Load and merge all configured instruction datasets."""
+        datasets_cfg = self.sft_cfg.get("datasets", [])
+        all_datasets = []
 
-    def format_conversation(
-        self,
-        messages: list[dict[str, str]],
-    ) -> dict[str, torch.Tensor]:
-        """Tokenize a single conversation with label masking.
+        for ds_cfg in datasets_cfg:
+            hub_id = ds_cfg.get("hub_id")
+            local_path = ds_cfg.get("path")
+            weight = ds_cfg.get("weight", 1.0)
 
-        Parameters
-        ----------
-        messages : list[dict[str, str]]
-            Chat messages in the format:
-            ``[{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]``
-
-        Returns
-        -------
-        dict[str, torch.Tensor]
-            ``{"input_ids": ..., "labels": ..., "attention_mask": ...}``
-            Labels are set to ``IGNORE_INDEX`` for non-assistant tokens.
-        """
-        # Full conversation — tokenized with special tokens
-        full_ids = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=False,
-            enable_thinking=self.enable_thinking,
-            return_tensors="pt",
-            max_length=self.max_seq_len,
-            truncation=True,
-        ).squeeze(0)
-
-        # Build labels: mask everything except assistant responses
-        labels = full_ids.clone()
-
-        # Tokenize only the user/system parts to find what to mask
-        # Strategy: tokenize without the last assistant turn to find
-        # the boundary, then repeat for each turn pair.
-        labels = self._mask_non_assistant_tokens(messages, labels)
-
-        attention_mask = torch.ones_like(full_ids)
-
-        return {
-            "input_ids": full_ids,
-            "labels": labels,
-            "attention_mask": attention_mask,
-        }
-
-    def _mask_non_assistant_tokens(
-        self,
-        messages: list[dict[str, str]],
-        labels: torch.Tensor,
-    ) -> torch.Tensor:
-        """Mask non-assistant tokens in labels with IGNORE_INDEX.
-
-        Uses incremental tokenization to find turn boundaries.
-        """
-        # Build prefix for each turn to find boundaries
-        current_prefix: list[dict[str, str]] = []
-
-        for msg in messages:
-            if msg["role"] != "assistant":
-                # This is a user/system turn — we need to mask its tokens
-                current_prefix.append(msg)
-                prefix_ids = self.tokenizer.apply_chat_template(
-                    current_prefix,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    enable_thinking=self.enable_thinking,
-                    max_length=self.max_seq_len,
-                    truncation=True,
-                )
-                # Mask up to this point
-                mask_len = min(len(prefix_ids), len(labels))
-                labels[:mask_len] = IGNORE_INDEX
+            if hub_id:
+                ds = self._load_from_hub(hub_id)
+            elif local_path:
+                ds = self._load_from_local(local_path)
             else:
-                current_prefix.append(msg)
+                logger.warning("Dataset config has no hub_id or path, skipping")
+                continue
 
-        return labels
+            if ds is not None and len(ds) > 0:
+                all_datasets.append((ds, weight))
 
-    def build_dataset(
-        self,
-        dataset_id: str,
-        split: str = "train",
-        messages_column: str | None = "messages",
-        human_column: str | None = None,
-        assistant_column: str | None = None,
-        system_column: str | None = None,
-        max_samples: int | None = None,
-    ) -> Dataset:
-        """Load and tokenize an instruction dataset.
+        if not all_datasets:
+            raise ValueError("No instruction datasets could be loaded")
 
-        Parameters
-        ----------
-        dataset_id : str
-            HuggingFace dataset ID or local path.
-        split : str
-            Dataset split.
-        messages_column : str | None
-            Column containing pre-formatted messages list.
-        human_column : str | None
-            Column with human/user instructions (alternative format).
-        assistant_column : str | None
-            Column with assistant responses (alternative format).
-        system_column : str | None
-            Optional column with system prompts.
-        max_samples : int | None
-            Limit number of samples.
+        return self._weighted_merge(all_datasets)
 
-        Returns
-        -------
-        Dataset
-            Tokenized dataset ready for SFTTrainer.
-        """
-        logger.info("Loading instruction dataset: %s [%s]", dataset_id, split)
-        ds = load_dataset(dataset_id, split=split)
+    def _load_from_hub(self, hub_id: str) -> Dataset | None:
+        """Load dataset from HuggingFace Hub."""
+        try:
+            logger.info(f"Loading instruction data from {hub_id}")
+            ds = load_dataset(hub_id, split="train")
+            return self._normalize_columns(ds)
+        except Exception as e:
+            logger.warning(f"Failed to load {hub_id}: {e}")
+            return None
 
-        if max_samples:
-            ds = ds.select(range(min(max_samples, len(ds))))
+    def _load_from_local(self, path: str) -> Dataset | None:
+        """Load dataset from local JSONL file."""
+        path = Path(path)
+        if not path.exists():
+            logger.warning(f"Local dataset not found: {path}")
+            return None
+        try:
+            ds = load_dataset("json", data_files=str(path), split="train")
+            return self._normalize_columns(ds)
+        except Exception as e:
+            logger.warning(f"Failed to load {path}: {e}")
+            return None
 
-        def _process(example: dict[str, Any]) -> dict[str, Any]:
-            if messages_column and messages_column in example:
-                messages = example[messages_column]
-            elif human_column and assistant_column:
+    def _normalize_columns(self, ds: Dataset) -> Dataset:
+        """Normalize dataset columns to standard format."""
+        # Handle various column naming conventions
+        columns = ds.column_names
+
+        if "instruction" in columns and "output" in columns:
+            # Alpaca format
+            def convert_alpaca(example):
+                user_msg = example["instruction"]
+                if example.get("input"):
+                    user_msg += f"\n\n{example['input']}"
+                return {
+                    "messages": [
+                        {"role": "user", "content": user_msg},
+                        {"role": "model", "content": example["output"]},
+                    ]
+                }
+            return ds.map(convert_alpaca, remove_columns=columns)
+
+        elif "conversations" in columns:
+            # ShareGPT format
+            def convert_sharegpt(example):
                 messages = []
-                if system_column and example.get(system_column):
-                    messages.append({"role": "system", "content": example[system_column]})
-                messages.append({"role": "user", "content": example[human_column]})
-                messages.append({"role": "assistant", "content": example[assistant_column]})
-            else:
-                raise ValueError(
-                    f"Cannot extract messages from example. "
-                    f"Provide messages_column or human_column + assistant_column."
+                for turn in example["conversations"]:
+                    role = "user" if turn["from"] in ("human", "user") else "model"
+                    messages.append({"role": role, "content": turn["value"]})
+                return {"messages": messages}
+            return ds.map(convert_sharegpt, remove_columns=columns)
+
+        elif "messages" in columns:
+            # Already in messages format
+            return ds
+
+        elif "prompt" in columns and "response" in columns:
+            def convert_prompt_response(example):
+                return {
+                    "messages": [
+                        {"role": "user", "content": example["prompt"]},
+                        {"role": "model", "content": example["response"]},
+                    ]
+                }
+            return ds.map(convert_prompt_response, remove_columns=columns)
+
+        else:
+            logger.warning(f"Unknown column format: {columns}")
+            return ds
+
+    def _weighted_merge(self, datasets_weights: list[tuple[Dataset, float]]) -> Dataset:
+        """Merge datasets with weighting via sampling."""
+        sum(len(ds) for ds, _ in datasets_weights)
+        merged = []
+
+        for ds, weight in datasets_weights:
+            n_samples = int(len(ds) * weight)
+            if n_samples > len(ds):
+                n_samples = len(ds)
+            indices = list(range(n_samples))
+            merged.append(ds.select(indices))
+
+        result = concatenate_datasets(merged)
+        result = result.shuffle(seed=42)
+        logger.info(f"Merged instruction dataset: {len(result)} samples")
+        return result
+
+    def format_for_training(self, dataset: Dataset, tokenizer) -> Dataset:
+        """Format dataset with chat template and tokenize."""
+
+        def format_and_tokenize(example):
+            messages = example["messages"]
+            # Format full conversation
+            full_text = format_gemma4_chat(messages, use_think=self.use_think)
+
+            # Tokenize
+            tokenized = tokenizer(
+                full_text,
+                truncation=True,
+                max_length=self.max_seq_length,
+                padding=False,
+            )
+
+            # Create labels with masking for prompt tokens
+            input_ids = tokenized["input_ids"]
+            labels = input_ids.copy()
+
+            if self.sft_cfg.get("train_on_completions_only", True):
+                # Mask everything before the model response
+                response_template = self.sft_cfg.get(
+                    "response_template", GEMMA4_MODEL_PREFIX
+                )
+                response_token_ids = tokenizer.encode(
+                    response_template, add_special_tokens=False
                 )
 
-            result = self.format_conversation(messages)
-            return {
-                "input_ids": result["input_ids"].tolist(),
-                "labels": result["labels"].tolist(),
-                "attention_mask": result["attention_mask"].tolist(),
-            }
+                # Find response start positions and mask prefix
+                labels = self._mask_prompt_tokens(
+                    input_ids, labels, response_token_ids
+                )
 
-        logger.info("Tokenizing %d examples …", len(ds))
-        ds = ds.map(_process, remove_columns=ds.column_names)
-        return ds
+            tokenized["labels"] = labels
+            return tokenized
+
+        formatted = dataset.map(
+            format_and_tokenize,
+            remove_columns=dataset.column_names,
+            desc="Formatting for SFT",
+        )
+        return formatted
+
+    def _mask_prompt_tokens(
+        self,
+        input_ids: list[int],
+        labels: list[int],
+        response_token_ids: list[int],
+    ) -> list[int]:
+        """Mask prompt tokens in labels (set to -100)."""
+        IGNORE_INDEX = -100
+        masked_labels = [IGNORE_INDEX] * len(labels)
+
+        # Find all occurrences of response template
+        template_len = len(response_token_ids)
+        response_starts = []
+
+        for i in range(len(input_ids) - template_len + 1):
+            if input_ids[i : i + template_len] == response_token_ids:
+                response_starts.append(i + template_len)
+
+        if not response_starts:
+            # If we can't find the template, train on everything
+            return labels
+
+        # Unmask from last response template occurrence to end
+        # For multi-turn, unmask all model responses
+        for start in response_starts:
+            # Find end of turn
+            end = len(input_ids)
+            for j in range(start, len(input_ids)):
+                # Look for end_of_turn token or next user turn
+                # Simple heuristic: unmask until end
+                pass
+            # Unmask response tokens
+            for j in range(start, end):
+                masked_labels[j] = labels[j]
+
+        return masked_labels

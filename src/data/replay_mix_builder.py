@@ -1,225 +1,194 @@
+"""Build training data mixtures with English/code replay buffers.
+
+During continued pretraining (CPT) on Portuguese data, the model risks
+"catastrophic forgetting" of English and general capabilities. This module
+implements data mixing strategies to mitigate this:
+
+Strategy: Mix Portuguese CPT data with small proportions of English and
+code data from the model's original training distribution. This acts as
+a "replay buffer" that reminds the model of its original capabilities.
+
+Typical mixture ratios:
+- pt_only: 100% Aurora-PT (baseline, no replay)
+- pt_en: 85% Aurora-PT + 15% English (FineWeb-Edu)
+- pt_en_code: 80% Aurora-PT + 15% English + 5% code (StarCoder)
+
+The English replay data comes from FineWeb-Edu (high-quality educational
+web text) and code from StarCoderData (permissively licensed code).
+
+Usage:
+    from src.data.replay_mix_builder import ReplayMixBuilder
+
+    builder = ReplayMixBuilder(config["data"])
+    mixed_dataset = builder.build_mixture("pt_en", primary_dataset)
 """
-src/data/replay_mix_builder.py
-──────────────────────────────
-Build mixed training data: X% PT-BR (Aurora-PT) + Y% EN high-quality
-(e.g. FineWeb-Edu) for replay-based continued pretraining.
 
-Interleaves two streaming sources with proportional sampling and
-produces packed sequences compatible with CausalLM training.
-"""
+from typing import Any
 
-from __future__ import annotations
+from datasets import Dataset, concatenate_datasets, load_dataset
 
-import random
-from typing import Any, Iterator
-
-from transformers import PreTrainedTokenizerBase
-
-from src.data.aurora_loader import AuroraLoader, PackedSequenceDataset
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
 class ReplayMixBuilder:
-    """Create a mixed-language training stream.
+    """Build data mixtures with replay buffers for catastrophic forgetting prevention.
 
-    Interleaves documents from a Portuguese source (Aurora-PT) and an
-    English source with configurable proportions.
+    Takes a primary Portuguese dataset and mixes it with English/code replay
+    data according to predefined ratios. The resulting dataset is shuffled
+    to ensure even distribution during training.
 
-    Parameters
-    ----------
-    pt_ratio : float
-        Proportion of Portuguese documents (e.g. 0.85 for 85%).
-    en_ratio : float
-        Proportion of English documents (e.g. 0.15 for 15%).
-    pt_dataset_id : str
-        HuggingFace ID for the Portuguese corpus.
-    en_dataset_id : str
-        HuggingFace ID for the English corpus.
-    pt_text_column : str
-        Text column in the Portuguese dataset.
-    en_text_column : str
-        Text column in the English dataset.
-    seed : int
-        Random seed for reproducible sampling.
+    Args:
+        config: Data config dict containing 'mixtures', 'english_replay',
+                and 'code_replay' sections.
+
+    Attributes:
+        mixtures: Dict mapping mixture names to source:ratio dicts.
+                  Example: {"pt_en": {"aurora_pt": 0.85, "english_replay": 0.15}}
     """
 
-    def __init__(
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+        self.mixtures = config.get("mixtures", {})
+        self.packing_cfg = config.get("packing", {})
+
+    def build_mixture(
         self,
-        pt_ratio: float = 0.85,
-        en_ratio: float = 0.15,
-        code_ratio: float = 0.0,
-        pt_dataset_id: str = "Itau-Unibanco/Aurora-PT",
-        en_dataset_id: str = "HuggingFaceFW/fineweb-edu",
-        code_dataset_id: str = "bigcode/starcoderdata",
-        pt_text_column: str = "text",
-        en_text_column: str = "text",
-        code_text_column: str = "content",
-        seed: int = 42,
-        num_shards: int = 1,
-        shard_index: int = 0,
-    ) -> None:
-        if abs(pt_ratio + en_ratio + code_ratio - 1.0) > 1e-6:
+        mixture_name: str,
+        primary_dataset: Dataset,
+        max_tokens: int | None = None,
+    ) -> Dataset:
+        """Build a specific mixture by name.
+
+        Computes the number of samples for each source based on the ratio
+        relative to the primary dataset size. For example, if primary has
+        10000 samples and English ratio is 0.15, loads ~1500 English samples.
+
+        Args:
+            mixture_name: Key in self.mixtures (e.g., "pt_en", "pt_en_code").
+            primary_dataset: The main Portuguese dataset (Aurora-PT).
+            max_tokens: Optional token budget to cap the final mixture size.
+                        Uses a 4 chars/token heuristic for estimation.
+
+        Returns:
+            Shuffled HuggingFace Dataset combining all sources.
+
+        Raises:
+            ValueError: If mixture_name is not in the configured mixtures.
+        """
+        if mixture_name not in self.mixtures:
             raise ValueError(
-                f"pt_ratio ({pt_ratio}) + en_ratio ({en_ratio}) + code_ratio ({code_ratio}) must equal 1.0"
+                f"Unknown mixture: {mixture_name}. Available: {list(self.mixtures.keys())}"
             )
 
-        self.pt_ratio = pt_ratio
-        self.en_ratio = en_ratio
-        self.code_ratio = code_ratio
-        self.seed = seed
+        ratios = self.mixtures[mixture_name]
+        logger.info(f"Building mixture '{mixture_name}': {ratios}")
 
-        # ⚠️ REQUIRES HF_TOKEN for gated dataset access (Aurora-PT)
-        self._pt_loader = AuroraLoader(
-            dataset_id=pt_dataset_id,
-            text_column=pt_text_column,
-            num_shards=num_shards,
-            shard_index=shard_index,
-        )
-        self._en_dataset_id = en_dataset_id
-        self._en_text_column = en_text_column
-        self._code_dataset_id = code_dataset_id
-        self._code_text_column = code_text_column
+        datasets_to_mix = []
+        total_primary = len(primary_dataset)
 
-    def _en_stream(self) -> Iterator[str]:
-        """Stream English documents from the replay source."""
-        from datasets import load_dataset
+        for source, ratio in ratios.items():
+            if source == "aurora_pt":
+                # Primary Portuguese data — take proportion of full dataset
+                n_samples = int(total_primary * ratio)
+                ds = primary_dataset.select(range(min(n_samples, total_primary)))
+                datasets_to_mix.append(ds)
+                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
 
-        logger.info("Streaming EN replay source: %s", self._en_dataset_id)
-        ds = load_dataset(
-            self._en_dataset_id,
-            split="train",
-            streaming=True,
-        )
-        for example in ds:
-            text = example.get(self._en_text_column, "")
-            if text and text.strip():
-                yield text.strip()
+            elif source == "english_replay":
+                # English replay from FineWeb-Edu (educational web text)
+                n_samples = int(total_primary * ratio)
+                ds = self._load_english_replay(n_samples)
+                datasets_to_mix.append(ds)
+                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
 
-    def _code_stream(self) -> Iterator[str]:
-        """Stream Code documents from the replay source."""
-        from datasets import load_dataset
+            elif source == "code":
+                # Code replay from StarCoderData
+                n_samples = int(total_primary * ratio)
+                ds = self._load_code_replay(n_samples)
+                datasets_to_mix.append(ds)
+                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
 
-        if self.code_ratio <= 0.0:
-            return
+        # Concatenate all sources and shuffle for even distribution
+        mixed = concatenate_datasets(datasets_to_mix)
+        mixed = mixed.shuffle(seed=42)
 
-        logger.info("Streaming CODE replay source: %s", self._code_dataset_id)
-        ds = load_dataset(
-            self._code_dataset_id,
-            split="train",
-            streaming=True,
-        )
-        for example in ds:
-            text = example.get(self._code_text_column, "")
-            if text and text.strip():
-                yield text.strip()
+        # Optional: cap mixture size by estimated token count
+        if max_tokens:
+            # Heuristic: ~4 characters per token on average
+            est_chars = max_tokens * 4
+            cumulative = 0
+            cutoff = len(mixed)
+            for i in range(len(mixed)):
+                cumulative += len(mixed[i]["text"])
+                if cumulative >= est_chars:
+                    cutoff = i + 1
+                    break
+            mixed = mixed.select(range(cutoff))
 
-    def stream(self) -> Iterator[str]:
-        """Yield mixed PT/EN/CODE documents according to configured ratios.
+        logger.info(f"Final mixture size: {len(mixed)} samples")
+        return mixed
 
-        Uses probabilistic sampling: for each document slot, draw from
-        the Portuguese stream, English stream, or Code stream.
+    def _load_english_replay(self, n_samples: int) -> Dataset:
+        """Load English replay data from FineWeb-Edu.
+
+        Uses streaming to avoid downloading the full dataset (10B+ tokens).
+        Takes only the first n_samples documents.
+
+        Args:
+            n_samples: Number of English documents to load.
+
+        Returns:
+            Dataset with a "text" column containing English documents.
+            Returns a single empty-text dataset on failure (graceful degradation).
         """
-        rng = random.Random(self.seed)
-        pt_iter = self._pt_loader.stream()
-        en_iter = self._en_stream()
-        code_iter = self._code_stream()
+        en_cfg = self.config.get("english_replay", {})
+        hub_id = en_cfg.get("hub_id", "HuggingFaceFW/fineweb-edu")
+        subset = en_cfg.get("subset", "sample-10BT")
 
-        pt_exhausted = False
-        en_exhausted = False
-        code_exhausted = self.code_ratio <= 0.0
+        logger.info(f"Loading English replay from {hub_id}/{subset}")
+        try:
+            # Stream to avoid full download
+            ds = load_dataset(hub_id, subset, split="train", streaming=True)
+            samples = []
+            for i, example in enumerate(ds):
+                if i >= n_samples:
+                    break
+                samples.append({"text": example["text"]})
+            return Dataset.from_list(samples)
+        except Exception as e:
+            logger.warning(f"Failed to load English replay: {e}. Using empty dataset.")
+            return Dataset.from_list([{"text": ""}])
 
-        while True:
-            if pt_exhausted and en_exhausted and code_exhausted:
-                break
+    def _load_code_replay(self, n_samples: int) -> Dataset:
+        """Load code replay data from StarCoderData.
 
-            # Probabilistic source selection
-            roll = rng.random()
+        Loads Python code by default (configurable via code_replay.languages).
+        Uses streaming for memory efficiency.
 
-            if roll < self.pt_ratio and not pt_exhausted:
-                try:
-                    yield next(pt_iter)
-                except StopIteration:
-                    pt_exhausted = True
-                    logger.info("Portuguese stream exhausted.")
-            elif roll < (self.pt_ratio + self.en_ratio) and not en_exhausted:
-                try:
-                    yield next(en_iter)
-                except StopIteration:
-                    en_exhausted = True
-                    logger.info("English stream exhausted.")
-            elif not code_exhausted:
-                try:
-                    yield next(code_iter)
-                except StopIteration:
-                    code_exhausted = True
-                    logger.info("Code stream exhausted.")
-            elif not en_exhausted:
-                try:
-                    yield next(en_iter)
-                except StopIteration:
-                    en_exhausted = True
-            elif not pt_exhausted:
-                try:
-                    yield next(pt_iter)
-                except StopIteration:
-                    pt_exhausted = True
+        Args:
+            n_samples: Number of code documents to load.
 
-    def build_packed_dataset(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        max_seq_len: int = 4096,
-    ) -> PackedSequenceDataset:
-        """Build a packed-sequence dataset from the mixed stream.
-
-        Parameters
-        ----------
-        tokenizer : PreTrainedTokenizerBase
-            Model tokenizer.
-        max_seq_len : int
-            Packed sequence length.
-
-        Returns
-        -------
-        PackedSequenceDataset
+        Returns:
+            Dataset with a "text" column containing code snippets.
+            Returns a single empty-text dataset on failure (graceful degradation).
         """
-        return PackedSequenceDataset(
-            text_iterator=self.stream(),
-            tokenizer=tokenizer,
-            max_seq_len=max_seq_len,
-        )
+        code_cfg = self.config.get("code_replay", {})
+        hub_id = code_cfg.get("hub_id", "bigcode/starcoderdata")
+        languages = code_cfg.get("languages", ["python"])
 
-
-def build_replay_mix_from_config(
-    config: dict[str, Any],
-    tokenizer: PreTrainedTokenizerBase,
-) -> PackedSequenceDataset:
-    """Factory: build a replay mix dataset from YAML config.
-
-    Parameters
-    ----------
-    config : dict
-        Full config dict (expects ``data`` section).
-    tokenizer : PreTrainedTokenizerBase
-        Model tokenizer.
-
-    Returns
-    -------
-    PackedSequenceDataset
-    """
-    data_cfg = config.get("data", config)
-    builder = ReplayMixBuilder(
-        pt_ratio=data_cfg.get("pt_ratio", 0.85),
-        en_ratio=data_cfg.get("en_ratio", 0.15),
-        code_ratio=data_cfg.get("code_ratio", 0.0),
-        pt_dataset_id=data_cfg.get("dataset_id", "Itau-Unibanco/Aurora-PT"),
-        en_dataset_id=data_cfg.get("en_dataset_id", "HuggingFaceFW/fineweb-edu"),
-        code_dataset_id=data_cfg.get("code_dataset_id", "bigcode/starcoderdata"),
-        num_shards=data_cfg.get("num_shards", 1),
-        shard_index=data_cfg.get("shard_index", 0),
-    )
-    return builder.build_packed_dataset(
-        tokenizer=tokenizer,
-        max_seq_len=data_cfg.get("max_seq_len", 4096),
-    )
+        logger.info(f"Loading code replay from {hub_id}")
+        try:
+            ds = load_dataset(hub_id, data_dir=languages[0], split="train", streaming=True)
+            samples = []
+            for i, example in enumerate(ds):
+                if i >= n_samples:
+                    break
+                # StarCoderData uses "content" field, fallback to "text"
+                content = example.get("content", example.get("text", ""))
+                samples.append({"text": content})
+            return Dataset.from_list(samples)
+        except Exception as e:
+            logger.warning(f"Failed to load code replay: {e}. Using empty dataset.")
+            return Dataset.from_list([{"text": ""}])

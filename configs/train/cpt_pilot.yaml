@@ -1,0 +1,83 @@
+# =============================================================================
+# CPT Piloto — Gemma 4 E4B com LoRA
+# =============================================================================
+# Propósito: Validação rápida da receita de CPT antes de escalar
+# Hardware mínimo: 1x A100 80GB
+# Orçamento: ~5B tokens Gemma 4 (medido após tokenizer audit)
+# Duração estimada: ~24h em 1x A100
+
+experiment:
+  name: "cpt_pilot_e4b_lora"
+  description: "CPT piloto com LoRA no Gemma 4 E4B base"
+  seed: 42
+  trilha: "piloto"
+
+model_config: "configs/model/gemma4_e4b.yaml"
+data_config: "configs/data/aurora_pt.yaml"
+
+# Mistura de dados — sweep neste nível
+data_mixture: "pt_en_15"  # 85% PT + 15% EN replay
+
+training:
+  method: "cpt"
+  peft_method: "lora"  # "lora" | "dora" | "qlora" | "full"
+  use_lora: true
+  num_train_epochs: 1
+  max_steps: 5000
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 16
+  # Batch efetivo: 2 * 16 * 8192 = ~262K tokens/step
+  effective_batch_size_tokens: 262144
+
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+
+# Configuração PEFT — LoRA padrão
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  task_type: "CAUSAL_LM"
+  bias: "none"
+  # Para DoRA, adicionar: use_dora: true
+
+checkpointing:
+  save_steps: 500
+  save_total_limit: 5
+  resume_from_checkpoint: null
+
+logging:
+  log_level: "info"
+  logging_steps: 10
+  report_to: ["json", "tensorboard"]
+  log_file: "outputs/cpt_pilot/train_log.jsonl"
+  tensorboard_dir: "outputs/cpt_pilot/tensorboard"
+
+evaluation:
+  eval_steps: 500
+  eval_strategy: "steps"
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+early_stopping:
+  enabled: true
+  patience: 5
+  threshold: 0.001
+
+output:
+  output_dir: "outputs/cpt_pilot"
+  overwrite_output_dir: false

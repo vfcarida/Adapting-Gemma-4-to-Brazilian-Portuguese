@@ -1,47 +1,37 @@
-"""
-src/eval/tasks/tweet_sentbr.py
-──────────────────────────────
-TweetSentBR — Tweet Sentiment Analysis in Brazilian Portuguese.
-Multi-class sentiment classification, measured by macro-F1.
-"""
+"""TweetSentBR task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "tweet_sentbr"
-    dataset_id: str = "ruanchaves/tweetsentbr"
-    dataset_split: str = "test"
-    metric: str = "macro_f1"
-    num_fewshot: int = 25
-    description: str = "TweetSentBR — Tweet Sentiment Analysis"
-
-    text_column: str = "tweet_text"
-    label_column: str = "label"
-    label_map: dict[int, str] = field(default_factory=lambda: {
-        0: "Negativo",
-        1: "Neutro",
-        2: "Positivo",
-    })
-
-    output_type: str = "multiple_choice"
-    doc_to_text: str = (
-        "Tweet: {{tweet_text}}\n"
-        "Sentimento (Negativo/Neutro/Positivo):"
-    )
-    doc_to_target: str = "{{label}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/ruanchaves/tweetsentbr",
-        "language": "pt-BR",
-        "domain": "social_media",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class TweetSentBRTask(BaseTask):
+    """TweetSentBR sentiment analysis."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "Se7enB/TweetSentBR")
+        data = self._load_from_hub(hub_id)
+
+        label_map = {0: "negativo", 1: "neutro", 2: "positivo"}
+        examples = []
+        for item in data:
+            label_val = item.get("label", item.get("sentiment", 1))
+            example = {
+                "text": item.get("text", item.get("tweet_text", "")),
+                "label": label_map.get(label_val, str(label_val)),
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return example["label"]
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        text = raw_prediction.strip().lower()
+        if "positiv" in text:
+            return "positivo"
+        if "negativ" in text:
+            return "negativo"
+        if "neutr" in text:
+            return "neutro"
+        return "neutro"

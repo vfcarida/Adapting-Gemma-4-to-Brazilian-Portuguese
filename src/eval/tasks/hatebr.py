@@ -1,46 +1,35 @@
-"""
-src/eval/tasks/hatebr.py
-────────────────────────
-HateBR — Hate Speech Detection in Brazilian Portuguese.
-Binary classification, measured by macro-F1.
-"""
+"""HateBR task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "hatebr"
-    dataset_id: str = "ruanchaves/hatebr"
-    dataset_split: str = "test"
-    metric: str = "macro_f1"
-    num_fewshot: int = 25
-    description: str = "HateBR — Hate Speech Detection in Brazilian Portuguese"
-
-    text_column: str = "instagram_comment"
-    label_column: str = "offensive_language"
-    label_map: dict[int, str] = field(default_factory=lambda: {
-        0: "Não ofensivo",
-        1: "Ofensivo",
-    })
-
-    output_type: str = "multiple_choice"
-    doc_to_text: str = (
-        "Texto: {{instagram_comment}}\n"
-        "Este texto contém discurso de ódio?"
-    )
-    doc_to_target: str = "{{offensive_language}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/ruanchaves/hatebr",
-        "language": "pt-BR",
-        "domain": "social_media",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class HateBRTask(BaseTask):
+    """HateBR hate speech detection."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "Se7enB/HateBR")
+        data = self._load_from_hub(hub_id)
+
+        examples = []
+        for item in data:
+            label_val = item.get("label", item.get("offensive_language", 0))
+            label = "odio" if label_val == 1 else "nao_odio"
+            example = {
+                "text": item.get("text", item.get("instagram_comment", "")),
+                "label": label,
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return example["label"]
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        text = raw_prediction.strip().lower()
+        if "nao" in text or "nao_odio" in text or "no" in text:
+            return "nao_odio"
+        if "odio" in text or "hate" in text or "sim" in text:
+            return "odio"
+        return "nao_odio"

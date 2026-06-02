@@ -1,0 +1,173 @@
+# =============================================================================
+# Matriz de Ablações — Protocolo Experimental Completo
+# =============================================================================
+# Cada ablação é uma combinação de:
+#   - Modelo base (E4B, 26B-A4B, 31B)
+#   - Método PEFT (lora, dora, qlora, full)
+#   - Mistura de replay (pt_only, pt_en_5, pt_en_10, pt_en_15)
+#   - Pós-processamento (nenhum, residual_merge, sft, sft+dpo)
+#   - Think mode (on, off)
+
+# =============================================================================
+# TRILHA PILOTO (E4B) — Validação de Hipóteses
+# =============================================================================
+pilot_experiments:
+  # --- Grupo A: Baselines (sem CPT) ---
+  A1_baseline_it:
+    description: "Gemma 4 E4B-IT original, sem adaptação"
+    model_config: "configs/model/gemma4_e4b.yaml"
+    model_id: "google/gemma-4-E4B-it"
+    steps: []
+    eval_think_modes: ["off", "on"]
+
+  # --- Grupo B: CPT com diferentes métodos PEFT ---
+  B1_cpt_lora:
+    description: "CPT com LoRA r=64"
+    model_config: "configs/model/gemma4_e4b.yaml"
+    peft_method: "lora"
+    lora_r: 64
+    data_mixture: "pt_en_15"
+    token_budget: 5_000_000_000
+    eval_think_modes: ["off"]
+
+  B2_cpt_dora:
+    description: "CPT com DoRA r=64"
+    model_config: "configs/model/gemma4_e4b.yaml"
+    peft_method: "dora"
+    lora_r: 64
+    data_mixture: "pt_en_15"
+    token_budget: 5_000_000_000
+    eval_think_modes: ["off"]
+
+  B3_cpt_qlora:
+    description: "CPT com QLoRA r=64 (4-bit quantizado)"
+    model_config: "configs/model/gemma4_e4b.yaml"
+    peft_method: "qlora"
+    lora_r: 64
+    data_mixture: "pt_en_15"
+    token_budget: 5_000_000_000
+    eval_think_modes: ["off"]
+
+  # --- Grupo C: Sweep de replay ratio ---
+  C1_cpt_pt_only:
+    description: "CPT 100% português (sem replay)"
+    peft_method: "lora"
+    data_mixture: "pt_only"
+    token_budget: 5_000_000_000
+
+  C2_cpt_pt_en_5:
+    description: "CPT 95% PT + 5% EN"
+    peft_method: "lora"
+    data_mixture: "pt_en_5"
+    token_budget: 5_000_000_000
+
+  C3_cpt_pt_en_10:
+    description: "CPT 90% PT + 10% EN"
+    peft_method: "lora"
+    data_mixture: "pt_en_10"
+    token_budget: 5_000_000_000
+
+  C4_cpt_pt_en_15:
+    description: "CPT 85% PT + 15% EN"
+    peft_method: "lora"
+    data_mixture: "pt_en_15"
+    token_budget: 5_000_000_000
+
+  # --- Grupo D: Residual Merge ---
+  D1_residual_merge:
+    description: "CPT + Residual Merge com alpha sweep"
+    depends_on: "B1_cpt_lora"
+    alpha_sweep: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]
+    eval_think_modes: ["off", "on"]
+
+  # --- Grupo E: SFT ---
+  E1_cpt_sft_pt:
+    description: "CPT + SFT em dados PT"
+    depends_on: "B1_cpt_lora"
+    sft_data: "pt_only"
+    eval_think_modes: ["off", "on"]
+
+  E2_cpt_sft_pt_en:
+    description: "CPT + SFT em dados PT + EN"
+    depends_on: "B1_cpt_lora"
+    sft_data: "pt_en"
+    eval_think_modes: ["off", "on"]
+
+  # --- Grupo F: DPO ---
+  F1_cpt_sft_dpo:
+    description: "CPT + SFT + DPO"
+    depends_on: "E1_cpt_sft_pt"
+    enabled: false
+
+  # --- Grupo G: Think mode ---
+  G1_think_comparison:
+    description: "Comparação think_on vs think_off"
+    depends_on: "E1_cpt_sft_pt"
+    eval_think_modes: ["off", "on"]
+
+# =============================================================================
+# TRILHA PRINCIPAL (26B-A4B)
+# =============================================================================
+main_experiments:
+  M1_cpt_26b:
+    description: "CPT completo no 26B-A4B"
+    model_config: "configs/model/gemma4_26b.yaml"
+    peft_method: "full"
+    data_mixture: "pt_en_15"
+    token_budget: 20_000_000_000
+
+  M2_cpt_26b_large:
+    description: "CPT com orçamento maior (50B tokens)"
+    model_config: "configs/model/gemma4_26b.yaml"
+    peft_method: "full"
+    data_mixture: "pt_en_15"
+    token_budget: 50_000_000_000
+
+  M3_merge_26b:
+    description: "Residual merge no 26B"
+    depends_on: "M1_cpt_26b"
+    alpha_sweep: [0.7, 0.8, 0.9, 1.0]
+
+  M4_sft_26b:
+    description: "SFT no 26B"
+    depends_on: "M1_cpt_26b"
+
+# =============================================================================
+# TRILHA OPCIONAL (31B Dense)
+# =============================================================================
+optional_experiments:
+  O1_cpt_31b:
+    description: "CPT no 31B dense"
+    model_config: "configs/model/gemma4_31b.yaml"
+    peft_method: "lora"
+    data_mixture: "pt_en_15"
+    token_budget: 20_000_000_000
+    enabled: false
+
+# =============================================================================
+# ABLAÇÃO DE TOKENIZER
+# =============================================================================
+tokenizer_experiments:
+  H1_vocab_8k:
+    description: "Expansão vocabular +8K tokens PT"
+    vocab_size_delta: 8000
+    enabled: false
+  H2_vocab_16k:
+    description: "Expansão vocabular +16K tokens PT"
+    vocab_size_delta: 16000
+    enabled: false
+  H3_vocab_32k:
+    description: "Expansão vocabular +32K tokens PT"
+    vocab_size_delta: 32000
+    enabled: false
+
+# =============================================================================
+# Protocolo de Avaliação
+# =============================================================================
+evaluation_protocol:
+  benchmark_config: "configs/eval/benchmarks.yaml"
+  statistical_tests:
+    method: "paired_bootstrap"
+    n_bootstrap: 1000
+    confidence_level: 0.95
+    correction: "holm"

@@ -1,0 +1,46 @@
+import json
+import codecs
+
+data = {
+  "letter_extraction": [
+    {"input": "A", "expected": "A"},
+    {"input": "a", "expected": "A"},
+    {"input": "A)", "expected": "A"},
+    {"input": "A.", "expected": "A"},
+    {"input": "A alternativa correta é C", "expected": "C"},
+    {"input": "(C)", "expected": "C"},
+    {"input": "Resposta: B", "expected": "B"},
+    {"input": "A resposta é D porque...", "expected": "D"},
+    {"input": "", "expected": ""},
+    {"input": "   B   ", "expected": "B"},
+    {"input": "c) essa opção", "expected": "C"}
+  ],
+  "think_stripping": [
+    {"input": "<think>x</think>A", "expected": "A"},
+    {"input": "<think>\nmultiline\n</think>\nB", "expected": "B"},
+    {"input": "<think></think>C", "expected": "C"},
+    {"input": "D (sem think)", "expected": "D (sem think)"},
+    {"input": "<think>raciocínio longo com acentuação</think>Resposta: E", "expected": "Resposta: E"}
+  ],
+  "boolq_normalization": [
+    {"input": "sim", "expected": "sim"},
+    {"input": "Sim", "expected": "sim"},
+    {"input": "SIM", "expected": "sim"},
+    {"input": "não", "expected": "não"},
+    {"input": "Não", "expected": "não"},
+    {"input": "yes", "expected": "sim"},
+    {"input": "no", "expected": "não"},
+    {"input": "true", "expected": "sim"},
+    {"input": "false", "expected": "não"},
+    {"input": "Sim, com certeza.", "expected": "sim"}
+  ],
+  "unicode_normalization": [
+    {"input": "ação", "expected_normalized": "acao"},
+    {"input": "AÇÃO", "expected_normalized": "acao"},
+    {"input": "café", "expected_normalized": "cafe"},
+    {"input": "  múltiplos   espaços  ", "expected_normalized": "multiplos espacos"}
+  ]
+}
+
+with codecs.open('tests/fixtures/golden_parsing.json', 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
