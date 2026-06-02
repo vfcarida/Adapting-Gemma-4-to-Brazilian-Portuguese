@@ -1,82 +1,73 @@
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Gemma 4 PT-BR Adaptation — Makefile                                ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+.PHONY: install test test-quick smoke lint format preflight validate-configs clean ready all
+.PHONY: audit contamination baselines cpt-pilot cpt-main merge sft eval run-all
 
-.PHONY: install lint test tokenizer-audit contamination-check \
-        cpt-pilot cpt-main merge sft eval baselines report all clean help
+# === Desenvolvimento ===
 
-SHELL := /bin/bash
-PYTHON := python
-SCRIPTS := scripts
-
-# ── Setup ────────────────────────────────────────────────────────────
 install:
-	$(PYTHON) -m pip install -e ".[dev,eval-harness]"
-
-lint:
-	$(PYTHON) -m ruff check src/ --fix
-	$(PYTHON) -m ruff format src/
+	pip install -e ".[dev]"
 
 test:
-	$(PYTHON) -m pytest tests/ -v --tb=short
+	pytest tests/ -v --tb=short
 
-# ── Data Pipeline ────────────────────────────────────────────────────
-tokenizer-audit:
-	bash $(SCRIPTS)/run_tokenizer_audit.sh
+test-quick:
+	pytest tests/ -q --tb=line
 
-contamination-check:
-	bash $(SCRIPTS)/run_contamination_checks.sh
+smoke:
+	python -m tests.smoke_test
 
-# ── Training Pipeline ───────────────────────────────────────────────
+lint:
+	ruff check src/ tests/
+
+format:
+	ruff format src/ tests/
+
+preflight:
+	python -m src.preflight
+
+validate-configs:
+	@python -c "import yaml; from pathlib import Path; \
+	configs = list(Path('configs').rglob('*.yaml')); \
+	[yaml.safe_load(f.read_text()) for f in configs]; \
+	print(f'All {len(configs)} configs valid.')"
+
+# === Pipeline ===
+
+audit:
+	bash scripts/run_tokenizer_audit.sh
+
+contamination:
+	bash scripts/run_contamination_checks.sh
+
+baselines:
+	bash scripts/run_baselines.sh
+
 cpt-pilot:
-	bash $(SCRIPTS)/run_cpt_pilot.sh
+	bash scripts/run_cpt_pilot.sh
 
 cpt-main:
-	bash $(SCRIPTS)/run_cpt_main.sh
+	bash scripts/run_cpt_main.sh
 
 merge:
-	bash $(SCRIPTS)/run_residual_merge.sh
+	bash scripts/run_residual_merge.sh
 
 sft:
-	bash $(SCRIPTS)/run_sft.sh
-
-# ── Evaluation Pipeline ─────────────────────────────────────────────
-baselines:
-	bash $(SCRIPTS)/run_baselines.sh
+	bash scripts/run_sft.sh
 
 eval:
-	bash $(SCRIPTS)/run_eval.sh
+	bash scripts/run_eval.sh
 
-report:
-	$(PYTHON) -m src.eval.report_builder
+run-all:
+	bash scripts/run_all.sh
 
-# ── Full Pipeline ────────────────────────────────────────────────────
-all:
-	bash $(SCRIPTS)/run_all.sh
+# === Compostos ===
 
-# ── Cleanup ──────────────────────────────────────────────────────────
+ready: install preflight test smoke
+	@echo ""
+	@echo "=== ALL CHECKS PASSED — READY FOR TRAINING ==="
+
+all: lint test smoke validate-configs
+
 clean:
+	rm -rf outputs/tmp_* .pytest_cache/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	rm -rf .ruff_cache/ .pytest_cache/ *.egg-info/ dist/ build/
-
-# ── Help ─────────────────────────────────────────────────────────────
-help:
-	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  Gemma 4 PT-BR Adaptation — Available Targets           ║"
-	@echo "╠══════════════════════════════════════════════════════════╣"
-	@echo "║  install              Install package + dependencies    ║"
-	@echo "║  lint                 Run ruff linter + formatter       ║"
-	@echo "║  test                 Run pytest suite                  ║"
-	@echo "║  tokenizer-audit      Analyze tokenizer fertility       ║"
-	@echo "║  contamination-check  Run 3-tier decontamination        ║"
-	@echo "║  cpt-pilot            CPT on Gemma-4-E4B (pilot)        ║"
-	@echo "║  cpt-main             CPT on Gemma-4-26B-A4B            ║"
-	@echo "║  merge                Residual merge (task arithmetic)   ║"
-	@echo "║  sft                  Supervised fine-tuning             ║"
-	@echo "║  baselines            Evaluate baseline models          ║"
-	@echo "║  eval                 Full evaluation suite              ║"
-	@echo "║  report               Generate Markdown report          ║"
-	@echo "║  all                  Run entire pipeline end-to-end    ║"
-	@echo "║  clean                Remove caches and build artifacts  ║"
-	@echo "╚══════════════════════════════════════════════════════════╝"
+	find . -name "*.pyc" -delete 2>/dev/null || true

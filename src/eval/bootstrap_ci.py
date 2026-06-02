@@ -1,141 +1,92 @@
-"""
-src/eval/bootstrap_ci.py
-────────────────────────
-Bootstrap confidence intervals and paired bootstrap tests for
-statistical significance in model comparisons.
+"""Bootstrap confidence intervals for evaluation metrics."""
 
-Provides:
-  • bootstrap_confidence_interval — 95% CI for a metric
-  • paired_bootstrap_test — p-value for paired difference
-"""
-
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 
-def bootstrap_confidence_interval(
-    scores: list[float] | np.ndarray,
-    n_bootstrap: int = 10_000,
+def bootstrap_ci(
+    predictions: list[Any],
+    gold_labels: list[Any],
+    metric_fn: Callable[[list, list], dict[str, float]],
+    n_bootstrap: int = 1000,
     confidence_level: float = 0.95,
-    statistic: str = "mean",
     seed: int = 42,
-) -> dict[str, float]:
-    """Compute bootstrap confidence interval for a set of scores.
+) -> dict[str, dict[str, float]]:
+    """Compute bootstrap confidence intervals for a metric.
 
-    Parameters
-    ----------
-    scores : array-like
-        Individual sample scores (e.g. per-example accuracy).
-    n_bootstrap : int
-        Number of bootstrap resamples.
-    confidence_level : float
-        Confidence level (e.g. 0.95 for 95% CI).
-    statistic : str
-        Statistic to compute: ``"mean"`` or ``"median"``.
-    seed : int
-        Random seed.
-
-    Returns
-    -------
-    dict[str, float]
-        ``{"estimate": ..., "ci_lower": ..., "ci_upper": ..., "ci_width": ...}``
+    Returns:
+        Dict mapping metric names to {mean, ci_lower, ci_upper, std}
     """
-    scores = np.asarray(scores, dtype=np.float64)
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
+    n = len(predictions)
 
-    stat_fn = np.mean if statistic == "mean" else np.median
-    point_estimate = float(stat_fn(scores))
+    # Collect bootstrap samples
+    bootstrap_metrics: dict[str, list[float]] = {}
 
-    # Bootstrap resampling
-    boot_stats = np.empty(n_bootstrap)
-    n = len(scores)
-    for i in range(n_bootstrap):
-        sample = scores[rng.randint(0, n, size=n)]
-        boot_stats[i] = stat_fn(sample)
+    for _ in range(n_bootstrap):
+        indices = rng.integers(0, n, size=n)
+        boot_preds = [predictions[i] for i in indices]
+        boot_gold = [gold_labels[i] for i in indices]
 
-    # Percentile method
-    alpha = 1.0 - confidence_level
-    ci_lower = float(np.percentile(boot_stats, 100 * (alpha / 2)))
-    ci_upper = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        metrics = metric_fn(boot_preds, boot_gold)
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                bootstrap_metrics.setdefault(key, []).append(value)
 
-    return {
-        "estimate": point_estimate,
-        "ci_lower": ci_lower,
-        "ci_upper": ci_upper,
-        "ci_width": ci_upper - ci_lower,
-        "n_bootstrap": n_bootstrap,
-        "confidence_level": confidence_level,
-    }
+    # Compute CIs
+    alpha = (1 - confidence_level) / 2
+    results = {}
+
+    for key, values in bootstrap_metrics.items():
+        values_arr = np.array(values)
+        results[key] = {
+            "mean": float(np.mean(values_arr)),
+            "std": float(np.std(values_arr)),
+            "ci_lower": float(np.percentile(values_arr, alpha * 100)),
+            "ci_upper": float(np.percentile(values_arr, (1 - alpha) * 100)),
+            "n_bootstrap": n_bootstrap,
+            "confidence_level": confidence_level,
+        }
+
+    return results
 
 
 def paired_bootstrap_test(
-    scores_a: list[float] | np.ndarray,
-    scores_b: list[float] | np.ndarray,
-    n_bootstrap: int = 10_000,
+    predictions_a: list[Any],
+    predictions_b: list[Any],
+    gold_labels: list[Any],
+    metric_fn: Callable[[list, list], dict[str, float]],
+    metric_key: str,
+    n_bootstrap: int = 1000,
     seed: int = 42,
 ) -> dict[str, float]:
-    """Paired bootstrap test for statistical significance.
+    """Paired bootstrap test comparing two models.
 
-    Tests whether model A is significantly different from model B
-    by resampling their per-example score differences.
-
-    Parameters
-    ----------
-    scores_a : array-like
-        Per-example scores for model A.
-    scores_b : array-like
-        Per-example scores for model B (same examples, same order).
-    n_bootstrap : int
-        Number of bootstrap resamples.
-    seed : int
-        Random seed.
-
-    Returns
-    -------
-    dict[str, float]
-        ``{"mean_diff": ..., "p_value": ..., "ci_lower": ..., "ci_upper": ...,
-           "significant_005": ..., "significant_001": ..., "significant_0001": ...}``
+    Returns p-value for the hypothesis that model A > model B.
     """
-    scores_a = np.asarray(scores_a, dtype=np.float64)
-    scores_b = np.asarray(scores_b, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    n = len(gold_labels)
 
-    if len(scores_a) != len(scores_b):
-        raise ValueError(
-            f"Score arrays must have the same length: {len(scores_a)} vs {len(scores_b)}"
-        )
+    wins_a = 0
 
-    # Observed difference
-    diffs = scores_a - scores_b
-    observed_diff = float(np.mean(diffs))
+    for _ in range(n_bootstrap):
+        indices = rng.integers(0, n, size=n)
+        boot_gold = [gold_labels[i] for i in indices]
+        boot_preds_a = [predictions_a[i] for i in indices]
+        boot_preds_b = [predictions_b[i] for i in indices]
 
-    # Bootstrap null distribution (centered differences)
-    rng = np.random.RandomState(seed)
-    n = len(diffs)
-    centered_diffs = diffs - observed_diff  # center under null
+        score_a = metric_fn(boot_preds_a, boot_gold).get(metric_key, 0)
+        score_b = metric_fn(boot_preds_b, boot_gold).get(metric_key, 0)
 
-    boot_diffs = np.empty(n_bootstrap)
-    for i in range(n_bootstrap):
-        sample = centered_diffs[rng.randint(0, n, size=n)]
-        boot_diffs[i] = np.mean(sample)
+        if score_a > score_b:
+            wins_a += 1
 
-    # Two-tailed p-value
-    p_value = float(np.mean(np.abs(boot_diffs) >= np.abs(observed_diff)))
-
-    # CI on the difference
-    ci_lower = float(np.percentile(diffs[rng.randint(0, n, size=(n_bootstrap, n))].mean(axis=1), 2.5))
-    ci_upper = float(np.percentile(diffs[rng.randint(0, n, size=(n_bootstrap, n))].mean(axis=1), 97.5))
+    p_value = 1.0 - (wins_a / n_bootstrap)
 
     return {
-        "mean_diff": observed_diff,
-        "p_value": p_value,
-        "ci_lower": ci_lower,
-        "ci_upper": ci_upper,
-        "significant_005": p_value < 0.05,
-        "significant_001": p_value < 0.01,
-        "significant_0001": p_value < 0.001,
-        "n_samples": n,
+        "p_value_a_gt_b": float(p_value),
+        "wins_a": wins_a,
         "n_bootstrap": n_bootstrap,
+        "significant_at_05": p_value < 0.05,
     }

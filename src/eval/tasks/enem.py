@@ -1,48 +1,35 @@
-"""
-src/eval/tasks/enem.py
-──────────────────────
-ENEM — Brazilian High School National Exam.
-Multiple-choice questions, measured by Approval Rate.
-"""
+"""ENEM benchmark task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    """ENEM task configuration for lm-evaluation-harness."""
-
-    task_name: str = "enem"
-    dataset_id: str = "eduagarcia/enem_challenge"
-    dataset_split: str = "test"
-    metric: str = "approval_rate"
-    num_fewshot: int = 3
-    description: str = "ENEM — Brazilian High School National Exam (Exame Nacional do Ensino Médio)"
-
-    # Column mapping
-    question_column: str = "question"
-    choices_column: str = "alternatives"
-    answer_column: str = "answer"
-
-    # Harness-specific
-    output_type: str = "multiple_choice"
-    doc_to_text: str = "{{question}}\n\nAlternativas:\n{{alternatives}}\n\nResposta:"
-    doc_to_target: str = "{{answer}}"
-    target_delimiter: str = " "
-    fewshot_delimiter: str = "\n\n"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/eduagarcia/enem_challenge",
-        "language": "pt-BR",
-        "domain": "education",
-        "license": "CC-BY-4.0",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    """Factory function returning the ENEM task configuration."""
-    return TaskConfig()
+class EnemTask(BaseTask):
+    """ENEM multiple choice questions (2022-2024)."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "maritaca-ai/enem")
+        subset = config.get("subset")
+        year = config.get("year")
+
+        data = self._load_from_hub(hub_id, subset=subset)
+
+        # Normalize format
+        examples = []
+        for item in data:
+            example = {
+                "question": item.get("question", item.get("pergunta", "")),
+                "options": item.get("options", item.get("alternativas", [])),
+                "answer": item.get("answer", item.get("resposta", "")),
+            }
+            if year:
+                example["year"] = year
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return str(example.get("answer", "")).strip().upper()
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        return self._extract_letter(raw_prediction)

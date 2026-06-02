@@ -1,48 +1,39 @@
-"""
-src/eval/tasks/mrpc_pt.py
-─────────────────────────
-MRPC-PT — Paraphrase Detection (Portuguese translation).
-Binary classification, measured by macro-F1.
-"""
+"""MRPC-PT task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "mrpc_pt"
-    dataset_id: str = "Se7eN/mrpc_pt"
-    dataset_split: str = "test"
-    metric: str = "macro_f1"
-    num_fewshot: int = 5
-    description: str = "MRPC-PT — Paraphrase Detection (Portuguese)"
-
-    sentence1_column: str = "sentence1"
-    sentence2_column: str = "sentence2"
-    label_column: str = "label"
-    label_map: dict[int, str] = field(default_factory=lambda: {
-        0: "Não",
-        1: "Sim",
-    })
-
-    output_type: str = "multiple_choice"
-    doc_to_text: str = (
-        "Sentença 1: {{sentence1}}\n"
-        "Sentença 2: {{sentence2}}\n"
-        "As sentenças são paráfrases uma da outra?"
-    )
-    doc_to_target: str = "{{label}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/Se7eN/mrpc_pt",
-        "language": "pt-BR",
-        "domain": "paraphrase",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class MRPCPTTask(BaseTask):
+    """MRPC paraphrase detection in Portuguese."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        local_path = config.get("local_path")
+        hub_id = config.get("hub_id")
+
+        if local_path:
+            data = self._load_from_local(local_path)
+        elif hub_id:
+            data = self._load_from_hub(hub_id)
+        else:
+            return []
+
+        examples = []
+        for item in data:
+            example = {
+                "sentence1": item.get("sentence1", item.get("premise", "")),
+                "sentence2": item.get("sentence2", item.get("hypothesis", "")),
+                "label": "sim" if item.get("label", 0) == 1 else "nao",
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return example["label"]
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        text = raw_prediction.strip().lower()
+        if "sim" in text or "yes" in text or "parafrase" in text:
+            return "sim"
+        return "nao"

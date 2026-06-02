@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff>=0.5.0
+      - name: Lint
+        run: ruff check src/ tests/
+      - name: Format check
+        run: ruff format --check src/ tests/
+
+  test-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+      - name: Run unit tests
+        run: |
+          pytest tests/ -v --tb=short -x \
+            --ignore=tests/smoke_test.py \
+            -k "not gpu"
+
+  test-smoke:
+    runs-on: ubuntu-latest
+    needs: test-unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Smoke test
+        run: python -m tests.smoke_test
+
+  validate-configs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML
+        run: pip install pyyaml>=6.0
+      - name: Validate YAML configs
+        run: |
+          python -c "
+          import yaml
+          from pathlib import Path
+          errors = []
+          for f in Path('configs').rglob('*.yaml'):
+              try:
+                  yaml.safe_load(f.read_text())
+              except Exception as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              for e in errors:
+                  print(f'ERROR: {e}')
+              exit(1)
+          print(f'All {len(list(Path(\"configs\").rglob(\"*.yaml\")))} configs valid.')
+          "
+
+  preflight:
+    runs-on: ubuntu-latest
+    needs: [lint, test-unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run preflight (no GPU check)
+        run: |
+          python -c "
+          from src.preflight import run_preflight
+          result = run_preflight(check_gpu=False, min_disk_gb=5.0)
+          # Allow warnings in CI (no GPU, no HF token)
+          failures = [c for c in result.failures if 'cuda' not in c['name'] and 'hf_auth' not in c['name']]
+          if failures:
+              for f in failures:
+                  print(f'FAIL: {f[\"name\"]}: {f[\"message\"]}')
+              exit(1)
+          "

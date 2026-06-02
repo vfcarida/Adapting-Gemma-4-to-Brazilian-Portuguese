@@ -39,60 +39,57 @@ graph LR
 
 ## 🚀 Quick Start
 
-### 1. Environment Setup
-
 ```bash
-# Clone the repository
+# 1. Clone & Install
 git clone https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese
 cd Adapting-Gemma-4-to-Brazilian-Portuguese
+pip install -e ".[dev]"
 
-# Install dependencies
-make install
+# 2. Validate environment
+gemma4pt preflight
 
-# Configure credentials
-cp .env.example .env
-# Edit .env with your HF_TOKEN (Required for Gemma 4 & Aurora-PT) and WANDB_API_KEY
+# 3. Run tests
+pytest tests/ -q
+
+# 4. End-to-end Smoke test (CPU)
+gemma4pt smoke
+
+# 5. Train (when GPU is available)
+gemma4pt train-cpt configs/train/cpt_pilot.yaml
 ```
 
-### 2. Data Quality & Contamination Audits (Stage 1)
+## 🛠️ CLI (`gemma4pt`)
 
+The project now includes a powerful CLI to manage the entire pipeline:
 ```bash
-# Tokenizer fertility analysis (tokens/char, tokens/word efficiency)
-bash scripts/run_tokenizer_audit.sh
-
-# Three-tier contamination check (Exact + Normalized + MinHash) against 14 benchmarks
-bash scripts/run_contamination_checks.sh
+gemma4pt preflight          # Valida ambiente
+gemma4pt smoke              # Smoke test E2E
+gemma4pt data-validate      # Valida dados
+gemma4pt contamination-check # Verifica contaminação
+gemma4pt tokenizer-audit    # Fertilidade tokenizer
+gemma4pt train-cpt CONFIG   # Continued Pretraining
+gemma4pt train-sft CONFIG   # SFT
+gemma4pt merge              # Residual merge
+gemma4pt eval               # Avaliação benchmarks
+gemma4pt report             # Gera relatórios
+gemma4pt manifest           # Manifesto reprodutibilidade
+gemma4pt run-all            # Pipeline completo
 ```
+*(All operations support `--dry-run`, `--tiny`, and `--cpu-only` flags).*
 
-### 3. Training & Automated Ablations
+## 📚 Documentation
 
-Our pipeline features an automated ablation orchestrator to systematically test our hypotheses:
-- **Ablation B:** Base + CPT (Pure Aurora)
-- **Ablation C:** Base + CPT + EN Replay
-- **Ablation D:** CPT + Residual Merge
-- **Ablation E:** CPT + SFT PT-BR
-- **Ablation F:** CPT + SFT Mixed
-
-```bash
-# Run the automated ablation matrix
-bash scripts/run_ablations.sh
-
-# Alternatively, run the main CPT pipeline on Gemma-4-26B-A4B (Multi-GPU + DeepSpeed)
-bash scripts/run_cpt_main.sh
-
-# Run DPO Preference Tuning
-python -m src.train.dpo_trainer --config configs/dpo.yml
-```
-
-### 4. Comprehensive Evaluation
-
-```bash
-# Evaluate all models on 14 PT-BR benchmarks
-bash scripts/run_eval.sh
-```
-This generates two key artifacts in `reports/`:
-- `summary.md`: Performance tables and Cost vs Quality analysis.
-- `findings_for_paper.md`: Explicit analysis of hypotheses (e.g., Catastrophic Forgetting, Merge vs SFT) intended for direct inclusion in academic papers.
+Deep operational guides are located in the `docs/` folder:
+| Document | Content |
+|----------|---------|
+| `docs/GEMMA4_COMPLIANCE.md` | Conformidade Gemma 4, thinking, multi-turn |
+| `docs/TRAIN_READY.md` | Checklist de prontidão para treino |
+| `docs/EVAL_PROTOCOL.md` | Protocolo de avaliação, métricas, CI |
+| `docs/SMOKE_TESTS.md` | Smoke tests e validação |
+| `docs/EXPERIMENT_PLAN.md` | Plano experimental 11 passos |
+| `docs/ARCHITECTURE.md` | Design do sistema |
+| `docs/DATA_PIPELINE.md` | Pipeline de dados |
+| `docs/TRAINING_GUIDE.md` | Guia de treinamento |
 
 ---
 
@@ -125,15 +122,12 @@ We utilize a layered evaluation suite to prevent saturation on easy or highly-tr
 .
 ├── ablations/                 # Automated hypothesis test outputs
 ├── configs/                   # YAML configurations for CPT, SFT, DPO, Merge, Eval
-├── src/
-│   ├── data/                  # Streaming loaders, Replay mix (PT/EN/Code), Decontamination
-│   ├── train/                 # CPT (CausalLM), SFTTrainer, DPOTrainer, Task Arithmetic
-│   ├── eval/                  # Benchmark Runner, Prompt Templates, Bootstrap CIs, Metrics
-│   └── eval/tasks/            # 14 distinct PT-BR evaluation task definitions
-├── scripts/                   # End-to-end bash execution scripts
+├── src/                       # CLI, Preflight, Data, Train, Eval, Utils
+├── docs/                      # Extensive operational guides
+├── tests/                     # 198+ Unit, integration, smoke, and golden tests
+├── scripts/                   # Legacy end-to-end bash execution scripts
 └── reports/                   # Markdown generation (summary.md, findings_for_paper.md)
 ```
-
 ## 📝 Requirements
 - Python ≥ 3.10
 - HuggingFace account with access to `google/gemma-4` variants and `Itau-Unibanco/Aurora-PT`.

@@ -1,50 +1,31 @@
-"""
-src/eval/tasks/xlsum_pt.py
-──────────────────────────
-XLSum-PT — Portuguese Abstractive Summarization.
-Generative task (optional appendage).
-"""
+"""XLSum-PT task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "xlsum_pt"
-    dataset_id: str = "csebuetnlp/xlsum"
-    dataset_config: str = "portuguese"
-    dataset_split: str = "test"
-    metric: str = "rougeL"  # Will require ROUGE metric if used heavily, but we can default to rough gen output
-    num_fewshot: int = 1
-    description: str = "XLSum-PT — Portuguese Abstractive Summarization"
-
-    text_column: str = "text"
-    summary_column: str = "summary"
-
-    output_type: str = "generate_until"
-    doc_to_text: str = (
-        "Resuma o seguinte texto em português:\n\n"
-        "{{text}}\n\n"
-        "Resumo:"
-    )
-    doc_to_target: str = "{{summary}}"
-    
-    generation_kwargs: dict[str, Any] = field(default_factory=lambda: {
-        "max_new_tokens": 128,
-        "temperature": 0.0,
-        "do_sample": False,
-    })
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/csebuetnlp/xlsum",
-        "language": "pt",
-        "domain": "summarization",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class XLSumPTTask(BaseTask):
+    """XLSum Portuguese summarization task."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        hub_id = config.get("hub_id", "csebuetnlp/xlsum")
+        subset = config.get("subset", "portuguese")
+
+        data = self._load_from_hub(hub_id, subset=subset)
+
+        examples = []
+        for item in data[:500]:  # Limit for evaluation
+            example = {
+                "text": item.get("text", item.get("document", "")),
+                "summary": item.get("summary", item.get("target", "")),
+            }
+            if example["text"]:
+                examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return example.get("summary", "")
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        return raw_prediction.strip()

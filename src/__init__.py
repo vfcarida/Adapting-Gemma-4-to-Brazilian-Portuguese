@@ -1,1 +1,1 @@
-# Gemma 4 PT-BR Adaptation — Source Package
+"""Gemma 4 Portuguese Adaptation Research."""

@@ -1,0 +1,345 @@
+# =============================================================================
+# Configuração de Avaliação — Gemma 4 Adaptação pt-BR
+# =============================================================================
+# Suite completa de benchmarks para avaliar adaptação linguística ao português.
+# Inclui benchmarks obrigatórios, exploratórios e retenção em inglês.
+
+evaluation:
+  seed: 42
+  temperature: 0.0
+  max_new_tokens: 512
+  batch_size: 8
+  use_vllm: true
+  cache_dir: "outputs/eval_cache"
+
+  # Modos de pensamento: avalia com e sem cadeia de raciocínio
+  think_modes: ["off", "on"]
+  # Quando think_on, remove <think>...</think> antes de computar métricas
+  strip_think_from_output: true
+  # Para modelos que esperam canal de thought vazio
+  empty_think_channel: false
+
+benchmarks:
+  # =========================================================================
+  # GRUPO: Brasil Geral (vestibulares e provas nacionais)
+  # =========================================================================
+  enem_2022:
+    task: "enem"
+    year: 2022
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "maritaca-ai/enem"
+    subset: "2022"
+    enabled: true
+
+  enem_2023:
+    task: "enem"
+    year: 2023
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "maritaca-ai/enem"
+    subset: "2023"
+    enabled: true
+
+  enem_2024:
+    task: "enem"
+    year: 2024
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "maritaca-ai/enem"
+    subset: "2024"
+    enabled: true
+
+  bluex:
+    task: "bluex"
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "Se7enB/bluex"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Semântica (inferência textual, similaridade, paráfrase)
+  # =========================================================================
+  assin2_rte:
+    task: "assin2_rte"
+    group: "semantica"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: "assin2"
+    enabled: true
+
+  assin2_sts:
+    task: "assin2_sts"
+    group: "semantica"
+    metric: "pearson"
+    num_shots: 5
+    hub_id: "assin2"
+    enabled: true
+
+  copa_pt:
+    task: "copa_pt"
+    group: "semantica"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "Se7enB/copa_pt"
+    enabled: true
+
+  boolq_pt:
+    task: "boolq_pt"
+    group: "semantica"
+    metric: "boolq_accuracy"
+    num_shots: 5
+    hub_id: null
+    # TODO: Identificar hub_id correto para BoolQ traduzido
+    local_path: "data/benchmarks/boolq_pt.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Classificação Social (sentimento, discurso de ódio)
+  # =========================================================================
+  hatebr:
+    task: "hatebr"
+    group: "classificacao_social"
+    metric: "macro_f1"
+    num_shots: 5
+    hub_id: "Se7enB/HateBR"
+    enabled: true
+
+  tweet_sentbr:
+    task: "tweet_sentbr"
+    group: "classificacao_social"
+    metric: "macro_f1"
+    num_shots: 5
+    hub_id: "Se7enB/TweetSentBR"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Jurídico (OAB, NER jurídico, benchmarks legais)
+  # =========================================================================
+  oab_bench:
+    task: "oab_bench"
+    group: "juridico"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: null
+    local_path: "data/benchmarks/oab_bench.jsonl"
+    # Modo rubrica quando disponível
+    rubric_mode: false
+    enabled: true
+
+  lener_br:
+    task: "lener_br"
+    group: "juridico"
+    metric: "entity_micro_f1"
+    num_shots: 0
+    hub_id: "lener_br"
+    # TODO: Verificar formato exato do dataset no HF Hub
+    enabled: true
+
+  legalbench_br:
+    task: "legalbench_br"
+    group: "juridico"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: null
+    # TODO: Identificar hub_id ou preparar dataset local
+    local_path: "data/benchmarks/legalbench_br.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Cultura (provérbios, conhecimento cultural)
+  # =========================================================================
+  broverbs:
+    task: "broverbs"
+    group: "cultura"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: null
+    local_path: "data/benchmarks/broverbs.jsonl"
+    enabled: true
+
+  capitu:
+    task: "capitu"
+    group: "cultura"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: null
+    # TODO: Identificar fonte do dataset CAPITU
+    local_path: "data/benchmarks/capitu.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Raciocínio Matemático
+  # =========================================================================
+  math_pt:
+    task: "math_pt"
+    group: "raciocinio"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: null
+    # TODO: Identificar hub_id para Math-PT
+    local_path: "data/benchmarks/math_pt.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Audiências Públicas / Domínio Público
+  # =========================================================================
+  publichearing_br:
+    task: "publichearing_br"
+    group: "dominio_publico"
+    metric: "macro_f1"
+    num_shots: 5
+    hub_id: null
+    # TODO: Identificar fonte do PublicHearingBR
+    local_path: "data/benchmarks/publichearing_br.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Segurança
+  # =========================================================================
+  donotanswer_pt:
+    task: "donotanswer_pt"
+    group: "seguranca"
+    metric: "refusal_rate"
+    num_shots: 0
+    hub_id: null
+    local_path: "data/benchmarks/donotanswer_pt.jsonl"
+    enabled: true
+
+  # =========================================================================
+  # GRUPO: Exploratórios (habilitados mas não obrigatórios)
+  # =========================================================================
+  xlsum_pt:
+    task: "xlsum_pt"
+    group: "exploratorio"
+    metric: "rouge_l"
+    num_shots: 0
+    hub_id: "csebuetnlp/xlsum"
+    subset: "portuguese"
+    # TODO: Adicionar BERTScore como métrica secundária
+    enabled: true
+
+  alba:
+    task: "alba"
+    group: "exploratorio"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: null
+    # TODO: Identificar fonte do dataset ALBA
+    local_path: "data/benchmarks/alba.jsonl"
+    enabled: false
+
+  mariner:
+    task: "mariner"
+    group: "exploratorio"
+    metric: "entity_micro_f1"
+    num_shots: 0
+    hub_id: null
+    # TODO: Identificar hub_id do MariNER
+    local_path: "data/benchmarks/mariner.jsonl"
+    enabled: false
+
+  # =========================================================================
+  # GRUPO: Retenção em Inglês (verifica catastrophic forgetting)
+  # =========================================================================
+  mmlu_en_sample:
+    task: "mmlu_en"
+    group: "retencao_en"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: "cais/mmlu"
+    subset: "all"
+    # Amostra de 500 questões para check rápido
+    max_samples: 500
+    enabled: true
+
+  hellaswag_en_sample:
+    task: "hellaswag_en"
+    group: "retencao_en"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "Rowan/hellaswag"
+    max_samples: 500
+    enabled: true
+
+  arc_en_sample:
+    task: "arc_en"
+    group: "retencao_en"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: "allenai/ai2_arc"
+    subset: "ARC-Challenge"
+    max_samples: 500
+    enabled: true
+
+# =============================================================================
+# Modelos a Avaliar
+# =============================================================================
+models_to_evaluate:
+  # --- Baselines obrigatórios ---
+  - id: "google/gemma-4-E4B-it"
+    name: "Gemma4-E4B-IT"
+    type: "baseline"
+    is_chat_model: true
+    prompt_builder: "gemma4"
+
+  - id: "CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it"
+    name: "Gaia-PT-BR-4B"
+    type: "baseline"
+    is_chat_model: true
+    prompt_builder: "gemma3"  # Usa template Gemma 3
+
+  - id: "maritaca-ai/sabia-7b"
+    name: "Sabia-7B"
+    type: "baseline"
+    is_chat_model: false  # Modelo base, não instruction-tuned
+    prompt_builder: "few_shot_plain"  # Protocolo few-shot sem chat template
+    num_shots_override: 5  # Sempre usa few-shot para Sabia
+
+  # --- Baseline opcional ---
+  - id: "TucanoBR/Tucano-2-7b-instruct"
+    name: "Tucano2-7B-Instruct"
+    type: "baseline"
+    is_chat_model: true
+    prompt_builder: "chatml"  # TODO: Verificar template do Tucano
+    enabled: false
+
+  # --- Modelos adaptados (caminhos preenchidos após treino) ---
+  - id: "outputs/cpt_pilot/final"
+    name: "CPT-E4B-Pilot"
+    type: "cpt"
+    is_chat_model: false
+    prompt_builder: "few_shot_plain"
+
+  - id: "outputs/cpt_main/final"
+    name: "CPT-E4B"
+    type: "cpt"
+    is_chat_model: false
+    prompt_builder: "few_shot_plain"
+
+  - id: "outputs/residual_merge/alpha_best"
+    name: "CPT+Merge-E4B"
+    type: "merge"
+    is_chat_model: true
+    prompt_builder: "gemma4"
+
+  - id: "outputs/sft/final"
+    name: "CPT+SFT-E4B"
+    type: "sft"
+    is_chat_model: true
+    prompt_builder: "gemma4"
+
+# =============================================================================
+# Configuração de Relatório
+# =============================================================================
+report:
+  output_dir: "reports"
+  formats: ["csv", "markdown", "json"]
+  bootstrap_n: 1000
+  confidence_level: 0.95
+  generate_plots: true
+  plot_types: ["heatmap", "radar", "bar", "scaling_curves", "retention_plot"]

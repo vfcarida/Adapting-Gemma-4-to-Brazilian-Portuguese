@@ -1,44 +1,36 @@
-"""
-src/eval/tasks/tuguesice_pt.py
-──────────────────────────────
-TugueSICE-PT — Portuguese Language Understanding.
-Multiple-choice, measured by Accuracy.
-"""
+"""Tuguesice-PT task."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class TaskConfig:
-    task_name: str = "tuguesice_pt"
-    dataset_id: str = "Se7eN/tuguesice_pt"
-    dataset_split: str = "test"
-    metric: str = "accuracy"
-    num_fewshot: int = 5
-    description: str = "TugueSICE-PT — Portuguese Language Understanding"
-
-    question_column: str = "question"
-    choices_column: str = "options"
-    answer_column: str = "answer"
-
-    output_type: str = "multiple_choice"
-    doc_to_text: str = (
-        "{{question}}\n\n"
-        "Opções:\n{{options}}\n\n"
-        "Resposta:"
-    )
-    doc_to_target: str = "{{answer}}"
-
-    metadata: dict[str, Any] = field(default_factory=lambda: {
-        "version": "1.0",
-        "source": "https://huggingface.co/datasets/Se7eN/tuguesice_pt",
-        "language": "pt",
-        "domain": "language_understanding",
-    })
+from src.eval.tasks.base_task import BaseTask
 
 
-def build_task() -> TaskConfig:
-    return TaskConfig()
+class TuguesicePTTask(BaseTask):
+    """Portuguese language and culture knowledge task."""
+
+    def load_data(self, config: dict[str, Any]) -> list[dict]:
+        local_path = config.get("local_path")
+        hub_id = config.get("hub_id")
+
+        if local_path:
+            data = self._load_from_local(local_path)
+        elif hub_id:
+            data = self._load_from_hub(hub_id)
+        else:
+            return []
+
+        examples = []
+        for item in data:
+            example = {
+                "question": item.get("question", item.get("pergunta", "")),
+                "options": item.get("options", item.get("alternativas", [])),
+                "answer": item.get("answer", item.get("resposta", "")),
+            }
+            examples.append(example)
+        return examples
+
+    def get_gold_label(self, example: dict) -> str:
+        return str(example.get("answer", "")).strip().upper()
+
+    def parse_prediction(self, raw_prediction: str) -> str:
+        return self._extract_letter(raw_prediction)

@@ -1,0 +1,74 @@
+# =============================================================================
+# CPT Principal — Gemma 4 26B-A4B Full Fine-Tune
+# =============================================================================
+# Propósito: Treinamento completo para resultados de publicação
+# Hardware mínimo: 4x A100 80GB (DeepSpeed ZeRO-3)
+# Orçamento: 20-50B tokens Gemma 4
+# Duração estimada: 3-7 dias em 4x A100
+
+experiment:
+  name: "cpt_main_26b_full"
+  description: "CPT completo no Gemma 4 26B-A4B base com English replay"
+  seed: 42
+  trilha: "principal"
+
+model_config: "configs/model/gemma4_26b.yaml"
+data_config: "configs/data/aurora_pt.yaml"
+
+training:
+  method: "cpt"
+  peft_method: "full"  # Full fine-tune para trilha principal
+  use_lora: false
+  num_train_epochs: 1
+  max_steps: -1  # Epoch completa ou até atingir budget
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 32
+  # Batch efetivo: 4 * 32 * 8192 = ~1M tokens/step
+  effective_batch_size_tokens: 1048576
+
+  learning_rate: 5.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+
+  # DeepSpeed ZeRO-3 para treino distribuído
+  deepspeed: "configs/train/ds_zero3.json"  # TODO: Criar config DeepSpeed
+
+# Mistura com replay — valor otimizado no piloto
+data_mixture: "pt_en_15"
+
+checkpointing:
+  save_steps: 1000
+  save_total_limit: 3
+  resume_from_checkpoint: null
+
+logging:
+  log_level: "info"
+  logging_steps: 10
+  report_to: ["json", "tensorboard"]
+  log_file: "outputs/cpt_main/train_log.jsonl"
+  tensorboard_dir: "outputs/cpt_main/tensorboard"
+
+evaluation:
+  eval_steps: 1000
+  eval_strategy: "steps"
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+early_stopping:
+  enabled: false  # Para CPT completo, não usar early stopping
+
+output:
+  output_dir: "outputs/cpt_main"
+  overwrite_output_dir: false

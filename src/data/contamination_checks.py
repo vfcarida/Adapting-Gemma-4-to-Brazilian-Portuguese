@@ -1,303 +1,228 @@
-"""
-src/data/contamination_checks.py
-────────────────────────────────
-Three-tier decontamination pipeline:
-  1. Exact match    — SHA-256 hash comparison of normalized text
-  2. Normalized     — lowercase + strip punctuation + collapse whitespace
-  3. Fuzzy match    — MinHash LSH (datasketch) with Jaccard threshold
-
-Builds a contamination index from evaluation test sets, then filters
-the Aurora-PT stream to produce a clean training shard.
-"""
-
-from __future__ import annotations
+"""Contamination detection between training data and evaluation benchmarks."""
 
 import hashlib
 import json
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from datasketch import MinHash, MinHashLSH
+from tqdm import tqdm
+
+try:
+    from datasketch import MinHash, MinHashLSH
+    HAS_DATASKETCH = True
+except ImportError:
+    HAS_DATASKETCH = False
 
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# ──────────────────────────────────────────────────────────────────────
-# Text normalization
-# ──────────────────────────────────────────────────────────────────────
-
-_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
-_WHITESPACE_RE = re.compile(r"\s+")
-
 
 def normalize_text(text: str) -> str:
-    """Lowercase, strip accents, remove punctuation, collapse whitespace."""
+    """Normalize text for comparison."""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join([c for c in text if not unicodedata.combining(c)])
     text = text.lower()
-    # Strip accents (NFD decomposition + remove combining chars)
-    text = unicodedata.normalize("NFD", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
-    # Remove punctuation
-    text = _PUNCT_RE.sub(" ", text)
-    # Collapse whitespace
-    text = _WHITESPACE_RE.sub(" ", text).strip()
-    return text
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^\w\s]", "", text)
+    return text.strip()
 
 
-def sha256_hash(text: str) -> str:
-    """SHA-256 hex digest of a string."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def compute_hash(text: str) -> str:
+    """Compute SHA-256 hash of normalized text."""
+    return hashlib.sha256(normalize_text(text).encode()).hexdigest()
 
 
-# ──────────────────────────────────────────────────────────────────────
-# MinHash builder
-# ──────────────────────────────────────────────────────────────────────
-
-_DEFAULT_NUM_PERM = 128
-
-
-def build_minhash(text: str, num_perm: int = _DEFAULT_NUM_PERM) -> MinHash:
-    """Build a MinHash signature from word-level shingles (3-grams)."""
+def ngrams(text: str, n: int = 5) -> set[str]:
+    """Extract word n-grams from text."""
     words = text.split()
-    m = MinHash(num_perm=num_perm)
-    for i in range(len(words) - 2):
-        shingle = " ".join(words[i : i + 3])
-        m.update(shingle.encode("utf-8"))
-    return m
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Contamination Checker
-# ──────────────────────────────────────────────────────────────────────
+    if len(words) < n:
+        return {" ".join(words)}
+    return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
 class ContaminationChecker:
-    """Three-tier decontamination checker.
+    """Check for data contamination between training corpus and benchmarks."""
 
-    Build the index from evaluation test-set samples, then call
-    :meth:`is_contaminated` on each training document to decide
-    whether it should be kept or discarded.
+    def __init__(self, benchmark_texts: list[str], benchmark_name: str):
+        self.benchmark_name = benchmark_name
+        self.benchmark_texts = benchmark_texts
+        self.benchmark_normalized = [normalize_text(t) for t in benchmark_texts]
+        self.benchmark_hashes = {compute_hash(t) for t in benchmark_texts}
+        self._build_minhash_index()
 
-    Parameters
-    ----------
-    jaccard_threshold : float
-        MinHash LSH Jaccard similarity threshold for fuzzy matching.
-    num_perm : int
-        Number of permutations for MinHash signatures.
-    """
-
-    def __init__(
-        self,
-        jaccard_threshold: float = 0.8,
-        num_perm: int = _DEFAULT_NUM_PERM,
-    ) -> None:
-        self.jaccard_threshold = jaccard_threshold
+    def _build_minhash_index(self, num_perm: int = 128):
+        """Build MinHash LSH index for fuzzy matching."""
         self.num_perm = num_perm
+        self.minhashes = {}
 
-        # Tier 1: exact hashes
-        self._exact_hashes: set[str] = set()
-        # Tier 2: normalized hashes
-        self._norm_hashes: set[str] = set()
-        # Tier 3: MinHash LSH index
-        self._lsh = MinHashLSH(threshold=jaccard_threshold, num_perm=num_perm)
-        self._lsh_counter = 0
+        if not HAS_DATASKETCH:
+            self.lsh = None
+            return
 
-        # Statistics
-        self.stats = {
-            "total_checked": 0,
-            "exact_matches": 0,
-            "normalized_matches": 0,
-            "fuzzy_matches": 0,
-            "clean": 0,
+        self.lsh = MinHashLSH(threshold=0.5, num_perm=num_perm)
+
+        for i, text in enumerate(self.benchmark_normalized):
+            mh = MinHash(num_perm=num_perm)
+            for gram in ngrams(text):
+                mh.update(gram.encode())
+            self.minhashes[i] = mh
+            try:
+                self.lsh.insert(f"bench_{i}", mh)
+            except ValueError:
+                pass  # Duplicate
+
+    def check_exact(self, train_texts: list[str]) -> dict[str, Any]:
+        """Check exact string overlap."""
+        matches = []
+        for i, text in enumerate(tqdm(train_texts, desc="Exact match")):
+            h = compute_hash(text)
+            if h in self.benchmark_hashes:
+                matches.append({"train_idx": i, "hash": h})
+        return {
+            "method": "exact",
+            "matches": len(matches),
+            "total_checked": len(train_texts),
+            "contamination_rate": len(matches) / max(len(train_texts), 1),
+            "details": matches[:100],
         }
 
-    def add_reference(self, text: str) -> None:
-        """Add a single reference text (from eval test set) to the index.
+    def check_normalized(self, train_texts: list[str]) -> dict[str, Any]:
+        """Check normalized text overlap."""
+        bench_set = set(self.benchmark_normalized)
+        matches = []
+        for i, text in enumerate(tqdm(train_texts, desc="Normalized match")):
+            norm = normalize_text(text)
+            if norm in bench_set:
+                matches.append({"train_idx": i})
+        return {
+            "method": "normalized",
+            "matches": len(matches),
+            "total_checked": len(train_texts),
+            "contamination_rate": len(matches) / max(len(train_texts), 1),
+            "details": matches[:100],
+        }
 
-        Parameters
-        ----------
-        text : str
-            A test-set sample to protect from contamination.
-        """
-        # Tier 1 — exact
-        self._exact_hashes.add(sha256_hash(text))
+    def check_fuzzy(self, train_texts: list[str], threshold: float = 0.7) -> dict[str, Any]:
+        """Check fuzzy overlap using MinHash LSH."""
+        if not HAS_DATASKETCH or self.lsh is None:
+            return {
+                "method": "fuzzy",
+                "threshold": threshold,
+                "matches": 0,
+                "total_checked": len(train_texts),
+                "contamination_rate": 0.0,
+                "details": [],
+                "warning": "datasketch not installed — fuzzy check skipped",
+            }
 
-        # Tier 2 — normalized
-        norm = normalize_text(text)
-        self._norm_hashes.add(sha256_hash(norm))
+        matches = []
+        for i, text in enumerate(tqdm(train_texts, desc="Fuzzy match")):
+            norm = normalize_text(text)
+            mh = MinHash(num_perm=self.num_perm)
+            for gram in ngrams(norm):
+                mh.update(gram.encode())
 
-        # Tier 3 — MinHash
-        mh = build_minhash(norm, num_perm=self.num_perm)
-        self._lsh.insert(f"ref_{self._lsh_counter}", mh)
-        self._lsh_counter += 1
+            candidates = self.lsh.query(mh)
+            for cand in candidates:
+                bench_idx = int(cand.split("_")[1])
+                # Compute actual Jaccard
+                jaccard = mh.jaccard(self.minhashes[bench_idx])
+                if jaccard >= threshold:
+                    matches.append({
+                        "train_idx": i,
+                        "bench_idx": bench_idx,
+                        "jaccard": float(jaccard),
+                    })
+                    break  # One match is enough
 
-    def add_references_from_dataset(
-        self,
-        dataset_id: str,
-        split: str = "test",
-        text_column: str = "text",
-        max_samples: int | None = None,
-    ) -> int:
-        """Load a HuggingFace dataset split and add all samples to the index.
+        return {
+            "method": "fuzzy",
+            "threshold": threshold,
+            "matches": len(matches),
+            "total_checked": len(train_texts),
+            "contamination_rate": len(matches) / max(len(train_texts), 1),
+            "details": matches[:100],
+        }
 
-        Parameters
-        ----------
-        dataset_id : str
-            HuggingFace dataset identifier.
-        split : str
-            Dataset split (typically ``"test"`` or ``"validation"``).
-        text_column : str
-            Column containing the text to index.
-        max_samples : int | None
-            Limit samples (for debugging).
+    def check_ngram_overlap(
+        self, train_texts: list[str], n: int = 10, threshold: float = 0.5
+    ) -> dict[str, Any]:
+        """Check n-gram overlap ratio."""
+        # Build benchmark n-gram set
+        bench_ngrams: set[str] = set()
+        for text in self.benchmark_normalized:
+            bench_ngrams.update(ngrams(text, n))
 
-        Returns
-        -------
-        int
-            Number of samples added.
-        """
-        from datasets import load_dataset
-
-        logger.info("Loading reference dataset: %s [%s]", dataset_id, split)
-        try:
-            ds = load_dataset(dataset_id, split=split)
-        except Exception as e:
-            logger.warning("Failed to load %s: %s — skipping.", dataset_id, e)
-            return 0
-
-        count = 0
-        for example in ds:
-            text = example.get(text_column, "")
-            if not text or not text.strip():
+        matches = []
+        for i, text in enumerate(tqdm(train_texts, desc=f"{n}-gram overlap")):
+            norm = normalize_text(text)
+            train_ng = ngrams(norm, n)
+            if not train_ng:
                 continue
-            self.add_reference(text.strip())
-            count += 1
-            if max_samples and count >= max_samples:
-                break
+            overlap = len(train_ng & bench_ngrams) / len(train_ng)
+            if overlap >= threshold:
+                matches.append({"train_idx": i, "overlap_ratio": float(overlap)})
 
-        logger.info("Added %d reference samples from %s", count, dataset_id)
-        return count
+        return {
+            "method": f"ngram_{n}",
+            "threshold": threshold,
+            "matches": len(matches),
+            "total_checked": len(train_texts),
+            "contamination_rate": len(matches) / max(len(train_texts), 1),
+            "details": matches[:100],
+        }
 
-    def is_contaminated(self, text: str) -> tuple[bool, str]:
-        """Check whether a training document is contaminated.
-
-        Returns
-        -------
-        tuple[bool, str]
-            ``(is_contaminated, reason)`` where *reason* is one of
-            ``"exact"``, ``"normalized"``, ``"fuzzy"``, or ``"clean"``.
-        """
-        self.stats["total_checked"] += 1
-
-        # Tier 1 — Exact match
-        if sha256_hash(text) in self._exact_hashes:
-            self.stats["exact_matches"] += 1
-            return True, "exact"
-
-        # Tier 2 — Normalized match
-        norm = normalize_text(text)
-        if sha256_hash(norm) in self._norm_hashes:
-            self.stats["normalized_matches"] += 1
-            return True, "normalized"
-
-        # Tier 3 — Fuzzy match (MinHash LSH)
-        mh = build_minhash(norm, num_perm=self.num_perm)
-        candidates = self._lsh.query(mh)
-        if candidates:
-            self.stats["fuzzy_matches"] += 1
-            return True, "fuzzy"
-
-        self.stats["clean"] += 1
-        return False, "clean"
-
-    def filter_stream(
-        self,
-        text_iterator: Iterator[str],
-    ) -> Iterator[str]:
-        """Yield only clean (non-contaminated) documents.
-
-        Parameters
-        ----------
-        text_iterator : Iterator[str]
-            Stream of training documents to filter.
-
-        Yields
-        ------
-        str
-            Clean documents.
-        """
-        for text in text_iterator:
-            contaminated, reason = self.is_contaminated(text)
-            if not contaminated:
-                yield text
-            else:
-                logger.debug("Contaminated (%s): %.80s…", reason, text)
-
-    def save_report(self, output_path: str | Path = "reports/contamination_report.json") -> None:
-        """Save contamination statistics as JSON."""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "jaccard_threshold": self.jaccard_threshold,
-                    "num_perm": self.num_perm,
-                    "num_references": self._lsh_counter,
-                    "stats": self.stats,
-                },
-                f,
-                indent=2,
-            )
-        logger.info("Contamination report saved → %s", output_path)
+    def run_all_checks(self, train_texts: list[str]) -> dict[str, Any]:
+        """Run all contamination checks."""
+        results = {
+            "benchmark": self.benchmark_name,
+            "benchmark_size": len(self.benchmark_texts),
+            "train_size": len(train_texts),
+            "checks": {
+                "exact": self.check_exact(train_texts),
+                "normalized": self.check_normalized(train_texts),
+                "fuzzy": self.check_fuzzy(train_texts),
+                "ngram_10": self.check_ngram_overlap(train_texts, n=10),
+            },
+        }
+        return results
 
 
-# ──────────────────────────────────────────────────────────────────────
-# CLI entry point
-# ──────────────────────────────────────────────────────────────────────
+def run_contamination_report(
+    train_texts: list[str],
+    benchmarks: dict[str, list[str]],
+    output_dir: str | Path = "outputs/contamination",
+) -> dict[str, Any]:
+    """Run contamination checks against all benchmarks and save report."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-if __name__ == "__main__":
-    import argparse
+    full_report = {"benchmarks": {}}
 
-    from src.data.aurora_loader import AuroraLoader
+    for name, bench_texts in benchmarks.items():
+        logger.info(f"Checking contamination against: {name} ({len(bench_texts)} samples)")
+        checker = ContaminationChecker(bench_texts, name)
+        result = checker.run_all_checks(train_texts)
+        full_report["benchmarks"][name] = result
 
-    parser = argparse.ArgumentParser(description="Contamination check pipeline")
-    parser.add_argument("--dataset_id", default="Itau-Unibanco/Aurora-PT")
-    parser.add_argument("--threshold", type=float, default=0.8)
-    parser.add_argument("--num_samples", type=int, default=10000)
-    parser.add_argument("--output", default="reports/contamination_report.json")
-    parser.add_argument(
-        "--ref_datasets",
-        nargs="+",
-        default=[
-            "eduagarcia/enem_challenge:test:alternatives",
-            "eduagarcia-temp/BLUEX:test:alternatives",
-            "nilc-nlp/assin2:test:hypothesis",
-        ],
-        help="Reference datasets in format dataset_id:split:text_column",
-    )
-    args = parser.parse_args()
+        # Save per-benchmark
+        with open(output_dir / f"{name}.json", "w") as f:
+            json.dump(result, f, indent=2)
 
-    checker = ContaminationChecker(jaccard_threshold=args.threshold)
+    # Summary
+    summary = {}
+    for name, result in full_report["benchmarks"].items():
+        summary[name] = {
+            method: check["contamination_rate"]
+            for method, check in result["checks"].items()
+        }
+    full_report["summary"] = summary
 
-    # Build contamination index from evaluation test sets
-    for ref_spec in args.ref_datasets:
-        parts = ref_spec.split(":")
-        ds_id = parts[0]
-        split = parts[1] if len(parts) > 1 else "test"
-        col = parts[2] if len(parts) > 2 else "text"
-        checker.add_references_from_dataset(ds_id, split=split, text_column=col)
+    with open(output_dir / "full_report.json", "w") as f:
+        json.dump(full_report, f, indent=2)
 
-    # Filter Aurora-PT stream
-    # ⚠️ REQUIRES HF_TOKEN for gated dataset access
-    loader = AuroraLoader(dataset_id=args.dataset_id)
-    clean_count = 0
-    for text in checker.filter_stream(loader.stream()):
-        clean_count += 1
-        if clean_count >= args.num_samples:
-            break
-
-    checker.save_report(args.output)
-    print(f"Clean documents: {clean_count}")
-    print(json.dumps(checker.stats, indent=2))
+    logger.info(f"Contamination report saved to {output_dir}")
+    return full_report
