@@ -1,7 +1,5 @@
 """Benchmark task implementations."""
 
-
-
 from src.eval.tasks.base_task import BaseTask
 
 

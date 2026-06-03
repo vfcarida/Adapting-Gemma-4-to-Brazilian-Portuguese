@@ -36,15 +36,14 @@ from src.eval.prompt_templates import (
 
 class MockTokenizerNoChat:
     """Tokenizer sem chat template."""
+
     pass
 
 
 class MockTokenizerWithChat:
     """Tokenizer com apply_chat_template funcional."""
 
-    def apply_chat_template(
-        self, messages, tokenize=False, add_generation_prompt=False, **kwargs
-    ):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, **kwargs):
         parts = []
         for msg in messages:
             role = msg["role"]

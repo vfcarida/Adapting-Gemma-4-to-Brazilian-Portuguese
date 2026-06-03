@@ -40,14 +40,13 @@ GEMMA4_ROLE_MODEL = "model"
 GEMMA4_MANUAL_TEMPLATE = "{start_of_turn}{role}\n{content}{end_of_turn}\n"
 
 # Regex para extrair blocos de pensamento
-_THINK_PATTERN = re.compile(
-    r"<think>\s*(.*?)\s*</think>", re.DOTALL
-)
+_THINK_PATTERN = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL)
 
 
 # ============================================================================
 # Tipos auxiliares
 # ============================================================================
+
 
 @runtime_checkable
 class TokenizerProtocol(Protocol):
@@ -292,9 +291,7 @@ class Gemma4PromptBuilder:
         for msg in messages:
             role = msg["role"]
             content = msg["content"]
-            parts.append(
-                f"{GEMMA4_START_OF_TURN}{role}\n{content}{GEMMA4_END_OF_TURN}\n"
-            )
+            parts.append(f"{GEMMA4_START_OF_TURN}{role}\n{content}{GEMMA4_END_OF_TURN}\n")
 
         if add_generation_prompt:
             parts.append(f"{GEMMA4_START_OF_TURN}{GEMMA4_ROLE_MODEL}\n")

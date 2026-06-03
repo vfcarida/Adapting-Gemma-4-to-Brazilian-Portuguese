@@ -241,9 +241,9 @@ def alpha_sweep(
     results = []
 
     for alpha in alphas:
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Alpha sweep: {alpha}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
         path = compute_residual_merge(
             base_model_id=base_model_id,
@@ -290,7 +290,9 @@ Examples:
     parser.add_argument("--instruct-model", type=str, required=True, help="Instruct model HF ID")
     parser.add_argument("--cpt-model", type=str, required=True, help="Path to CPT model")
     parser.add_argument(
-        "--alpha", type=float, nargs="+",
+        "--alpha",
+        type=float,
+        nargs="+",
         default=[0.5, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
         help="Alpha value(s) for instruction residual scaling",
     )

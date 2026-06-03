@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # --- Re-implement pure functions locally to avoid datasketch import ---
 
+
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = text.lower()
@@ -33,12 +34,13 @@ def ngrams(text: str, n: int = 5) -> set[str]:
     words = text.split()
     if len(words) < n:
         return {" ".join(words)}
-    return {" ".join(words[i: i + n]) for i in range(len(words) - n + 1)}
+    return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
 # Check if datasketch is available for integration tests
 try:
     from datasketch import MinHash  # noqa: F401
+
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False

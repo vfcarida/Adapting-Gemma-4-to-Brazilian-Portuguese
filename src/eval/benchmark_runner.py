@@ -158,9 +158,7 @@ class BenchmarkRunner:
 
         # Step 5: Compute metrics against gold labels
         gold_labels = [task.get_gold_label(ex) for ex in examples]
-        metrics = compute_metrics_for_task(
-            bench_cfg["metric"], parsed_predictions, gold_labels
-        )
+        metrics = compute_metrics_for_task(bench_cfg["metric"], parsed_predictions, gold_labels)
 
         result = {
             "task": bench_cfg["task"],
@@ -177,9 +175,7 @@ class BenchmarkRunner:
         logger.info(f"  {bench_name}: {metrics}")
         return result
 
-    def _inference_hf(
-        self, model_id: str, prompts: list[str], think_mode: str
-    ) -> list[str]:
+    def _inference_hf(self, model_id: str, prompts: list[str], think_mode: str) -> list[str]:
         """Run inference using HuggingFace Transformers (generate API).
 
         Loads the model once and processes all prompts in batches.
@@ -205,9 +201,9 @@ class BenchmarkRunner:
         predictions = []
         for i in tqdm(range(0, len(prompts), self.batch_size), desc="Inference"):
             batch = prompts[i : i + self.batch_size]
-            inputs = tokenizer(
-                batch, return_tensors="pt", padding=True, truncation=True
-            ).to(model.device)
+            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(
+                model.device
+            )
 
             with torch.no_grad():
                 outputs = model.generate(
@@ -231,9 +227,7 @@ class BenchmarkRunner:
         torch.cuda.empty_cache()
         return predictions
 
-    def _inference_vllm(
-        self, model_id: str, prompts: list[str], think_mode: str
-    ) -> list[str]:
+    def _inference_vllm(self, model_id: str, prompts: list[str], think_mode: str) -> list[str]:
         """Run inference using vLLM for 3-5x faster generation.
 
         vLLM uses PagedAttention and continuous batching for efficient

@@ -16,10 +16,11 @@ def get_logger(name: str, log_file: str | None = None, level: str = "INFO") -> l
     if not logger.handlers:
         # Console handler
         console = logging.StreamHandler(sys.stdout)
-        console.setFormatter(logging.Formatter(
-            "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
+        console.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(name)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+            )
+        )
         logger.addHandler(console)
 
         # File handler
@@ -27,9 +28,9 @@ def get_logger(name: str, log_file: str | None = None, level: str = "INFO") -> l
             path = Path(log_file)
             path.parent.mkdir(parents=True, exist_ok=True)
             fh = logging.FileHandler(path)
-            fh.setFormatter(logging.Formatter(
-                "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-            ))
+            fh.setFormatter(
+                logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s")
+            )
             logger.addHandler(fh)
 
     return logger

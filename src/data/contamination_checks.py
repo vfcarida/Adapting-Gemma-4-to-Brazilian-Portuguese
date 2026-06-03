@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 try:
     from datasketch import MinHash, MinHashLSH
+
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False
@@ -52,7 +53,9 @@ class ContaminationChecker:
         self.benchmark_normalized = [normalize_text(t) for t in benchmark_texts]
         self.benchmark_hashes = {compute_hash(t) for t in benchmark_texts}
         if not HAS_DATASKETCH:
-            logger.warning("datasketch is not installed. Fuzzy matching will be disabled and will silently pass.")
+            logger.warning(
+                "datasketch is not installed. Fuzzy matching will be disabled and will silently pass."
+            )
         self._build_minhash_index()
 
     def _build_minhash_index(self, num_perm: int = 128):
@@ -133,11 +136,13 @@ class ContaminationChecker:
                 # Compute actual Jaccard
                 jaccard = mh.jaccard(self.minhashes[bench_idx])
                 if jaccard >= threshold:
-                    matches.append({
-                        "train_idx": i,
-                        "bench_idx": bench_idx,
-                        "jaccard": float(jaccard),
-                    })
+                    matches.append(
+                        {
+                            "train_idx": i,
+                            "bench_idx": bench_idx,
+                            "jaccard": float(jaccard),
+                        }
+                    )
                     break  # One match is enough
 
         return {
@@ -218,8 +223,7 @@ def run_contamination_report(
     summary = {}
     for name, result in full_report["benchmarks"].items():
         summary[name] = {
-            method: check["contamination_rate"]
-            for method, check in result["checks"].items()
+            method: check["contamination_rate"] for method, check in result["checks"].items()
         }
     full_report["summary"] = summary
 

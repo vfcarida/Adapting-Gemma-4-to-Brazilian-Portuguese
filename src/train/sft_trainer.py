@@ -126,10 +126,18 @@ class SFTTrainerWrapper:
                 lora_alpha=lora_cfg.get("lora_alpha", 64),
                 lora_dropout=lora_cfg.get("lora_dropout", 0.05),
                 # Target all linear layers in the transformer for best results
-                target_modules=lora_cfg.get("target_modules", [
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
-                ]),
+                target_modules=lora_cfg.get(
+                    "target_modules",
+                    [
+                        "q_proj",
+                        "k_proj",
+                        "v_proj",
+                        "o_proj",
+                        "gate_proj",
+                        "up_proj",
+                        "down_proj",
+                    ],
+                ),
                 task_type="CAUSAL_LM",
                 bias="none",
             )

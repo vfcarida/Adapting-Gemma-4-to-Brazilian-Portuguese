@@ -49,9 +49,7 @@ def paired_permutation_test(
     b = np.asarray(scores_b, dtype=float)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     if len(a) < 2:
         raise ValueError("Necessário pelo menos 2 amostras para o teste de permutação.")
@@ -119,9 +117,7 @@ def mcnemar_test(
     b = np.asarray(correct_b, dtype=int)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     if len(a) == 0:
         return {"statistic": 0.0, "p_value": 1.0}
@@ -178,9 +174,7 @@ def wilcoxon_signed_rank(
     b = np.asarray(scores_b, dtype=float)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     # Arrays idênticos
     if np.array_equal(a, b):
@@ -308,8 +302,6 @@ def multiple_comparison_correction(
             corrected[idx] = min(cummax, 1.0)
 
     else:
-        raise ValueError(
-            f"Método desconhecido: '{method}'. Use 'holm' ou 'bonferroni'."
-        )
+        raise ValueError(f"Método desconhecido: '{method}'. Use 'holm' ou 'bonferroni'.")
 
     return corrected

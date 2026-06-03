@@ -27,21 +27,23 @@ def tmp_output_dir(tmp_path):
 @pytest.fixture
 def sample_eval_results():
     """Synthetic evaluation results for testing report builder."""
-    return [{
-        "model_name": "test_model",
-        "model_id": "test/model",
-        "benchmarks": {
-            "think_off": {
-                "enem": {
-                    "task": "enem",
-                    "group": "brasil_geral",
-                    "metric_name": "accuracy",
-                    "metrics": {"accuracy": 0.75},
-                    "num_examples": 100,
-                    "inference_time_sec": 10.0,
-                    "think_mode": "off",
-                    "raw_predictions": ["C", "B"],
-                },
-            }
-        },
-    }]
+    return [
+        {
+            "model_name": "test_model",
+            "model_id": "test/model",
+            "benchmarks": {
+                "think_off": {
+                    "enem": {
+                        "task": "enem",
+                        "group": "brasil_geral",
+                        "metric_name": "accuracy",
+                        "metrics": {"accuracy": 0.75},
+                        "num_examples": 100,
+                        "inference_time_sec": 10.0,
+                        "think_mode": "off",
+                        "raw_predictions": ["C", "B"],
+                    },
+                }
+            },
+        }
+    ]

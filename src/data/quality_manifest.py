@@ -16,12 +16,14 @@ from typing import Any, Dict, List, Optional, Set
 try:
     import pyarrow as pa
     import pyarrow.parquet as pq
+
     HAS_PARQUET = True
 except ImportError:
     HAS_PARQUET = False
 
 try:
     from datasets import Dataset  # noqa: F401
+
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
@@ -29,49 +31,227 @@ except ImportError:
 
 # Stopwords comuns em português para detecção de idioma
 _PT_STOPWORDS: Set[str] = {
-    "de", "a", "o", "que", "e", "do", "da", "em", "um", "para",
-    "é", "com", "não", "uma", "os", "no", "se", "na", "por", "mais",
-    "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem",
-    "à", "seu", "sua", "ou", "ser", "quando", "muito", "há", "nos",
-    "já", "está", "eu", "também", "só", "pelo", "pela", "até",
-    "isso", "ela", "entre", "era", "depois", "sem", "mesmo", "aos",
-    "ter", "seus", "quem", "nas", "me", "esse", "eles", "estão",
-    "você", "tinha", "foram", "essa", "num", "nem", "suas", "meu",
-    "às", "minha", "têm", "numa", "pelos", "elas", "havia", "seja",
-    "qual", "será", "nós", "tenho", "lhe", "deles", "essas", "esses",
-    "pelas", "este", "fosse", "dele", "tu", "te", "vocês", "vos",
-    "lhes", "meus", "minhas", "teu", "tua", "teus", "tuas", "nosso",
-    "nossa", "nossos", "nossas", "dela", "delas", "esta", "estes",
-    "estas", "aquele", "aquela", "aqueles", "aquelas", "isto", "aquilo",
+    "de",
+    "a",
+    "o",
+    "que",
+    "e",
+    "do",
+    "da",
+    "em",
+    "um",
+    "para",
+    "é",
+    "com",
+    "não",
+    "uma",
+    "os",
+    "no",
+    "se",
+    "na",
+    "por",
+    "mais",
+    "as",
+    "dos",
+    "como",
+    "mas",
+    "foi",
+    "ao",
+    "ele",
+    "das",
+    "tem",
+    "à",
+    "seu",
+    "sua",
+    "ou",
+    "ser",
+    "quando",
+    "muito",
+    "há",
+    "nos",
+    "já",
+    "está",
+    "eu",
+    "também",
+    "só",
+    "pelo",
+    "pela",
+    "até",
+    "isso",
+    "ela",
+    "entre",
+    "era",
+    "depois",
+    "sem",
+    "mesmo",
+    "aos",
+    "ter",
+    "seus",
+    "quem",
+    "nas",
+    "me",
+    "esse",
+    "eles",
+    "estão",
+    "você",
+    "tinha",
+    "foram",
+    "essa",
+    "num",
+    "nem",
+    "suas",
+    "meu",
+    "às",
+    "minha",
+    "têm",
+    "numa",
+    "pelos",
+    "elas",
+    "havia",
+    "seja",
+    "qual",
+    "será",
+    "nós",
+    "tenho",
+    "lhe",
+    "deles",
+    "essas",
+    "esses",
+    "pelas",
+    "este",
+    "fosse",
+    "dele",
+    "tu",
+    "te",
+    "vocês",
+    "vos",
+    "lhes",
+    "meus",
+    "minhas",
+    "teu",
+    "tua",
+    "teus",
+    "tuas",
+    "nosso",
+    "nossa",
+    "nossos",
+    "nossas",
+    "dela",
+    "delas",
+    "esta",
+    "estes",
+    "estas",
+    "aquele",
+    "aquela",
+    "aqueles",
+    "aquelas",
+    "isto",
+    "aquilo",
 }
 
 # Stopwords em inglês para comparação
 _EN_STOPWORDS: Set[str] = {
-    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
-    "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-    "this", "but", "his", "by", "from", "they", "we", "say", "her",
-    "she", "or", "an", "will", "my", "one", "all", "would", "there",
-    "their", "what", "so", "up", "out", "if", "about", "who", "get",
-    "which", "go", "me", "when", "make", "can", "like", "time", "no",
-    "just", "him", "know", "take", "people", "into", "year", "your",
-    "good", "some", "could", "them", "see", "other", "than", "then",
+    "the",
+    "be",
+    "to",
+    "of",
+    "and",
+    "a",
+    "in",
+    "that",
+    "have",
+    "i",
+    "it",
+    "for",
+    "not",
+    "on",
+    "with",
+    "he",
+    "as",
+    "you",
+    "do",
+    "at",
+    "this",
+    "but",
+    "his",
+    "by",
+    "from",
+    "they",
+    "we",
+    "say",
+    "her",
+    "she",
+    "or",
+    "an",
+    "will",
+    "my",
+    "one",
+    "all",
+    "would",
+    "there",
+    "their",
+    "what",
+    "so",
+    "up",
+    "out",
+    "if",
+    "about",
+    "who",
+    "get",
+    "which",
+    "go",
+    "me",
+    "when",
+    "make",
+    "can",
+    "like",
+    "time",
+    "no",
+    "just",
+    "him",
+    "know",
+    "take",
+    "people",
+    "into",
+    "year",
+    "your",
+    "good",
+    "some",
+    "could",
+    "them",
+    "see",
+    "other",
+    "than",
+    "then",
 }
 
 # Palavras-chave indicativas de toxicidade (lista mínima para heurística)
 # TODO: substituir por classificador treinado (e.g., detoxify, perspectiveAPI)
 _TOXIC_KEYWORDS: Set[str] = {
-    "idiota", "imbecil", "burro", "estúpido", "lixo", "nojento",
-    "merda", "porra", "caralho", "puta", "fdp", "arrombado",
-    "desgraçado", "vagabundo", "cretino", "otário", "babaca",
+    "idiota",
+    "imbecil",
+    "burro",
+    "estúpido",
+    "lixo",
+    "nojento",
+    "merda",
+    "porra",
+    "caralho",
+    "puta",
+    "fdp",
+    "arrombado",
+    "desgraçado",
+    "vagabundo",
+    "cretino",
+    "otário",
+    "babaca",
 }
 
 # Padrões regex para detecção de PII
 _PII_PATTERNS = {
     "cpf": re.compile(r"\b\d{3}[.\-]?\d{3}[.\-]?\d{3}[.\-/]?\d{2}\b"),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "telefone": re.compile(
-        r"\b(?:\+55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-.\s]?\d{4}\b"
-    ),
+    "telefone": re.compile(r"\b(?:\+55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-.\s]?\d{4}\b"),
     "cartao_credito": re.compile(r"\b\d{4}[\s.-]?\d{4}[\s.-]?\d{4}[\s.-]?\d{4}\b"),
 }
 
@@ -292,7 +472,9 @@ class QualityManifest:
             # Extrai texto do exemplo
             if isinstance(example, dict):
                 text = example.get(text_column, "")
-                domain = example.get(domain_column, default_domain) if domain_column else default_domain
+                domain = (
+                    example.get(domain_column, default_domain) if domain_column else default_domain
+                )
             elif isinstance(example, str):
                 text = example
                 domain = default_domain
@@ -389,7 +571,11 @@ class QualityManifest:
             pq.write_table(table, str(output_path))
         else:
             # Fallback para JSON
-            json_path = output_path.with_suffix(".json") if output_path.suffix == ".parquet" else output_path
+            json_path = (
+                output_path.with_suffix(".json")
+                if output_path.suffix == ".parquet"
+                else output_path
+            )
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(records_dicts, f, ensure_ascii=False, indent=2)
 
@@ -478,12 +664,8 @@ class QualityManifest:
         total = len(self.records)
         stats["_global"] = {
             "total_documents": total,
-            "avg_quality": round(
-                sum(r.quality_score for r in self.records) / total, 4
-            ),
-            "avg_length": round(
-                sum(r.n_words for r in self.records) / total, 2
-            ),
+            "avg_quality": round(sum(r.quality_score for r in self.records) / total, 4),
+            "avg_length": round(sum(r.n_words for r in self.records) / total, 2),
             "total_pii": sum(1 for r in self.records if r.has_pii),
             "total_duplicates": sum(1 for r in self.records if r.is_duplicate),
             "domains": list(domain_groups.keys()),

@@ -115,9 +115,14 @@ def _freeze_multimodal_modules(model: torch.nn.Module) -> None:
     frozen_count = 0
     # Padrões de nomes de módulos multimodais em modelos Gemma 4
     multimodal_patterns = [
-        "vision_tower", "vision_encoder", "visual",
-        "multi_modal_projector", "mm_projector",
-        "image_encoder", "img_", "pixel",
+        "vision_tower",
+        "vision_encoder",
+        "visual",
+        "multi_modal_projector",
+        "mm_projector",
+        "image_encoder",
+        "img_",
+        "pixel",
     ]
 
     for name, param in model.named_parameters():

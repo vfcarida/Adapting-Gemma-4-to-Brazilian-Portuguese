@@ -89,6 +89,7 @@ def data_validate(
 
     typer.echo("Carregando e validando datasets...")
     from src.data.aurora_loader import AuroraLoader
+
     loader = AuroraLoader(cfg)
     splits = loader.load_and_prepare()
     for split_name, ds in splits.items():
@@ -149,6 +150,7 @@ def tokenizer_audit(
 
     typer.echo(f"Executando auditoria do tokenizer de {model_id}...")
     from src.utils.hf_utils import load_tokenizer
+
     load_tokenizer(model_id)
     # Synthetic mini-audit for when data is not available
     typer.echo("Tokenizer carregado. Executando auditoria...")
@@ -170,8 +172,10 @@ def smoke(
     # Delegate to the smoke test module
     import sys
     from pathlib import Path
+
     sys.path.insert(0, str(Path(".").resolve()))
     from tests.smoke_test import run_smoke_test
+
     success = run_smoke_test(verbose=verbose)
 
     if success:
@@ -207,18 +211,23 @@ def train_cpt(
         return
 
     if tiny:
-        cfg = merge_configs(cfg, {
-            "training": {"max_steps": 10, "per_device_train_batch_size": 1},
-        })
+        cfg = merge_configs(
+            cfg,
+            {
+                "training": {"max_steps": 10, "per_device_train_batch_size": 1},
+            },
+        )
         typer.echo("[tiny] Usando max_steps=10, batch_size=1")
 
     if cpu_only:
         cfg = merge_configs(cfg, {"training": {"bf16": False, "tf32": False}})
         import os
+
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     try:
         from src.train.cpt_trainer import CPTTrainer
+
         trainer = CPTTrainer(cfg)
         trainer.run()
     except Exception as e:
@@ -251,6 +260,7 @@ def train_sft(
 
     try:
         from src.train.sft_trainer import SFTTrainerWrapper
+
         trainer = SFTTrainerWrapper(cfg)
         trainer.run()
     except Exception as e:
@@ -282,6 +292,7 @@ def merge(
         return
 
     from src.train.residual_merge import alpha_sweep, compute_residual_merge
+
     if len(alpha) == 1:
         compute_residual_merge(base_model, instruct_model, cpt_model, alpha[0], output_dir)
     else:
@@ -303,6 +314,7 @@ def evaluate(
     """Executa avaliação em benchmarks."""
     if dry_run:
         from src.utils.config_utils import load_config
+
         cfg = load_config(config)
         benchmarks = cfg.get("benchmarks", {})
         typer.echo("[dry-run] Avaliação seria executada:")
@@ -314,6 +326,7 @@ def evaluate(
         return
 
     from src.eval.benchmark_runner import run_evaluation
+
     run_evaluation(config, model)
 
 
@@ -376,6 +389,7 @@ def run_all(
     # Step 1: Preflight
     typer.echo("1/7 Preflight...")
     from src.preflight import run_preflight
+
     result = run_preflight(verbose=False)
     if not result.passed:
         typer.echo("Preflight falhou. Corrija os erros acima.")
@@ -413,13 +427,17 @@ def manifest(
 
     # Git info
     try:
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        sha = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
         manifest_data["git"]["sha"] = sha
-        dirty = subprocess.check_output(
-            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        dirty = (
+            subprocess.check_output(["git", "status", "--porcelain"], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
         manifest_data["git"]["dirty"] = bool(dirty)
     except (subprocess.CalledProcessError, FileNotFoundError):
         manifest_data["git"]["sha"] = "unknown"
@@ -435,6 +453,7 @@ def manifest(
     # Config if provided
     if config:
         from src.utils.config_utils import load_config
+
         manifest_data["config"] = load_config(config)
 
     # Save
@@ -443,8 +462,6 @@ def manifest(
     with open(out_path, "w") as f:
         json.dump(manifest_data, f, indent=2, default=str)
     typer.echo(f"Manifesto salvo em: {out_path}")
-
-
 
 
 if __name__ == "__main__":

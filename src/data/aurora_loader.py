@@ -131,12 +131,11 @@ class AuroraLoader:
         Returns:
             Dict with "train" and "validation" Dataset objects.
         """
+
         def assign_split(example, idx):
             # Hash first 500 chars for deterministic assignment
             # MD5 is fine here (not security-critical, just uniform distribution)
-            doc_hash = hashlib.md5(
-                example["text"][:500].encode()
-            ).hexdigest()
+            doc_hash = hashlib.md5(example["text"][:500].encode()).hexdigest()
             # Convert first 8 hex digits to float in [0, 1]
             hash_val = int(doc_hash[:8], 16) / 0xFFFFFFFF
             example["_split"] = "val" if hash_val < self.val_ratio else "train"
@@ -193,11 +192,12 @@ def tokenize_for_cpt(
     Returns:
         Dataset with "input_ids" and "labels" columns, ready for training.
     """
+
     def tokenize_fn(examples):
         return tokenizer(
             examples["text"],
-            truncation=False,      # Don't truncate - packing handles length
-            padding=False,         # No padding - packing fills sequences
+            truncation=False,  # Don't truncate - packing handles length
+            padding=False,  # No padding - packing fills sequences
             return_attention_mask=False,  # Not needed for packed CPT
         )
 
@@ -238,6 +238,7 @@ def pack_sequences(tokenized_dataset: Dataset, max_seq_length: int) -> Dataset:
         max_seq_length. Labels are identical to input_ids (causal LM
         objective: predict the next token at each position).
     """
+
     def pack_fn(examples):
         all_input_ids = []
         all_labels = []

@@ -44,6 +44,7 @@ def make_splits(config: dict[str, Any], output_dir: str = "outputs/data_splits")
     # Passo 1: Carregar corpus
     logger.info("Passo 1/5: Carregando corpus...")
     from src.data.aurora_loader import AuroraLoader
+
     loader = AuroraLoader(config)
     raw_dataset = loader.load_raw()
     logger.info(f"  Corpus bruto: {len(raw_dataset)} documentos")
@@ -54,6 +55,7 @@ def make_splits(config: dict[str, Any], output_dir: str = "outputs/data_splits")
     if qc_cfg.get("enabled", False):
         logger.info("Passo 2/5: Construindo manifesto de qualidade...")
         from src.data.quality_manifest import QualityManifest
+
         manifest = QualityManifest(qc_cfg)
         manifest.build_manifest(raw_dataset)
 
@@ -78,10 +80,13 @@ def make_splits(config: dict[str, Any], output_dir: str = "outputs/data_splits")
     if dedup_cfg.get("cluster_split", False):
         logger.info("Passo 3/5: Deduplicação por clusters...")
         from src.data.cluster_dedup import ClusterDedup
+
         dedup = ClusterDedup(dedup_cfg)
 
         texts = [raw_dataset[i]["text"] for i in filtered_indices]
-        cluster_map = dedup.build_clusters(texts, threshold=dedup_cfg.get("fuzzy_dedup", {}).get("threshold", 0.8))
+        cluster_map = dedup.build_clusters(
+            texts, threshold=dedup_cfg.get("fuzzy_dedup", {}).get("threshold", 0.8)
+        )
         dedup_stats = dedup.get_dedup_stats()
         stats["dedup"] = dedup_stats
         logger.info(f"  Clusters encontrados: {dedup_stats.get('n_clusters', 'N/A')}")
@@ -90,14 +95,13 @@ def make_splits(config: dict[str, Any], output_dir: str = "outputs/data_splits")
         logger.info("Passo 4/5: Criando splits por cluster...")
         val_ratio = dataset_cfg.get("val_ratio", 0.005)
         seed = dataset_cfg.get("seed", 42)
-        split_map = dedup.split_by_clusters(
-            cluster_map, val_ratio=val_ratio, seed=seed
-        )
+        split_map = dedup.split_by_clusters(cluster_map, val_ratio=val_ratio, seed=seed)
     else:
         logger.info("Passo 3/5: Dedup por cluster desabilitado, usando hash split...")
         logger.info("Passo 4/5: Split por hash de documento...")
         # Fallback: split por hash individual
         import hashlib
+
         val_ratio = dataset_cfg.get("val_ratio", 0.005)
 
         train_indices = []
@@ -137,9 +141,7 @@ def main():
     """CLI entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Criar splits de dados com QC e dedup por cluster"
-    )
+    parser = argparse.ArgumentParser(description="Criar splits de dados com QC e dedup por cluster")
     parser.add_argument("--config", type=str, default="configs/data/aurora_pt.yaml")
     parser.add_argument("--output-dir", type=str, default="outputs/data_splits")
     args = parser.parse_args()
