@@ -217,9 +217,13 @@ def train_cpt(
         import os
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-    from src.train.cpt_trainer import CPTTrainer
-    trainer = CPTTrainer(cfg)
-    trainer.run()
+    try:
+        from src.train.cpt_trainer import CPTTrainer
+        trainer = CPTTrainer(cfg)
+        trainer.run()
+    except Exception as e:
+        typer.secho(f"Erro fatal ao executar CPT: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
 
 
 # =============================================================================
@@ -245,9 +249,13 @@ def train_sft(
     if tiny:
         cfg = merge_configs(cfg, {"training": {"max_steps": 10}})
 
-    from src.train.sft_trainer import SFTTrainerWrapper
-    trainer = SFTTrainerWrapper(cfg)
-    trainer.run()
+    try:
+        from src.train.sft_trainer import SFTTrainerWrapper
+        trainer = SFTTrainerWrapper(cfg)
+        trainer.run()
+    except Exception as e:
+        typer.secho(f"Erro fatal ao executar SFT: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
 
 
 # =============================================================================
