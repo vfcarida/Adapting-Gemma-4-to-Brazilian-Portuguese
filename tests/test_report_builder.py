@@ -88,8 +88,14 @@ class TestBenchmarkGroups:
     """Test the benchmark group structure."""
 
     def test_all_groups_defined(self):
-        expected_groups = ["brasil_geral", "semantica", "classificacao_social",
-                          "juridico", "cultura", "seguranca"]
+        expected_groups = [
+            "brasil_geral",
+            "semantica",
+            "classificacao_social",
+            "juridico",
+            "cultura",
+            "seguranca",
+        ]
         for group in expected_groups:
             assert group in BENCHMARK_GROUPS
 
@@ -149,6 +155,7 @@ class TestReportBuilder:
             assert best_path.exists()
 
             import pandas as pd
+
             best = pd.read_csv(best_path)
             # CPT model should win all benchmarks in this sample
             assert all(best["model"] == "gemma-4-E4B-cpt")

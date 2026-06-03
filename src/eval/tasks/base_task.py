@@ -54,8 +54,7 @@ class BaseTask(ABC):
 
         # 3. "Resposta: X" / "Answer: X" / "alternativa X" / "é X"
         match = re.search(
-            r"(?:resposta|answer|alternativa|é)[^A-Ea-e]*([A-Ea-e])\b",
-            text, re.IGNORECASE
+            r"(?:resposta|answer|alternativa|é)[^A-Ea-e]*([A-Ea-e])\b", text, re.IGNORECASE
         )
         if match:
             return match.group(1).upper()
@@ -85,9 +84,12 @@ class BaseTask(ABC):
         match = re.search(r"(\d+\.?\d*)", text.strip())
         return match.group(1) if match else ""
 
-    def _load_from_hub(self, hub_id: str, subset: str | None = None, split: str = "test") -> list[dict]:
+    def _load_from_hub(
+        self, hub_id: str, subset: str | None = None, split: str = "test"
+    ) -> list[dict]:
         """Load data from HuggingFace Hub."""
         from datasets import load_dataset
+
         kwargs = {"split": split}
         if subset:
             kwargs["name"] = subset
@@ -113,6 +115,7 @@ class BaseTask(ABC):
         """Load data from local JSONL file."""
         import json
         from pathlib import Path
+
         p = Path(path)
         if not p.exists():
             return []

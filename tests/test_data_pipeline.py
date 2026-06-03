@@ -26,6 +26,7 @@ class TestAuroraLoaderPreprocessing:
     def test_email_redaction(self):
         """Emails should be replaced with [EMAIL]."""
         import re
+
         text = "Contact user@example.com for details"
         result = re.sub(r"\S+@\S+\.\S+", "[EMAIL]", text)
         assert "[EMAIL]" in result
@@ -34,6 +35,7 @@ class TestAuroraLoaderPreprocessing:
     def test_whitespace_normalization(self):
         """Multiple spaces/tabs should collapse to single space."""
         import re
+
         text = "hello   world\t\ttab"
         result = re.sub(r"[ \t]+", " ", text)
         assert result == "hello world tab"
@@ -41,6 +43,7 @@ class TestAuroraLoaderPreprocessing:
     def test_newline_normalization(self):
         """3+ consecutive newlines should collapse to 2."""
         import re
+
         text = "para1\n\n\n\n\npara2"
         result = re.sub(r"\n{3,}", "\n\n", text)
         assert result == "para1\n\npara2"
@@ -79,6 +82,7 @@ class TestDocumentHashSplit:
 
         # Should be roughly uniform - mean around 0.5
         import statistics
+
         mean = statistics.mean(values)
         assert 0.45 < mean < 0.55
 

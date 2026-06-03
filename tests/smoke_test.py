@@ -87,6 +87,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         try:
             import torch
+
             set_seed(42)
             ta = torch.randn(10)
             set_seed(42)
@@ -348,34 +349,36 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Synthetic results
-            results = [{
-                "model_name": "test_model",
-                "model_id": "test/model",
-                "benchmarks": {
-                    "think_off": {
-                        "enem": {
-                            "task": "enem",
-                            "group": "brasil_geral",
-                            "metric_name": "accuracy",
-                            "metrics": {"accuracy": 0.75},
-                            "num_examples": 100,
-                            "inference_time_sec": 10.0,
-                            "think_mode": "off",
-                            "raw_predictions": ["A", "B"],
-                        },
-                        "assin2_rte": {
-                            "task": "assin2_rte",
-                            "group": "semantica",
-                            "metric_name": "accuracy",
-                            "metrics": {"accuracy": 0.82},
-                            "num_examples": 50,
-                            "inference_time_sec": 5.0,
-                            "think_mode": "off",
-                            "raw_predictions": ["entailment"],
-                        },
-                    }
-                },
-            }]
+            results = [
+                {
+                    "model_name": "test_model",
+                    "model_id": "test/model",
+                    "benchmarks": {
+                        "think_off": {
+                            "enem": {
+                                "task": "enem",
+                                "group": "brasil_geral",
+                                "metric_name": "accuracy",
+                                "metrics": {"accuracy": 0.75},
+                                "num_examples": 100,
+                                "inference_time_sec": 10.0,
+                                "think_mode": "off",
+                                "raw_predictions": ["A", "B"],
+                            },
+                            "assin2_rte": {
+                                "task": "assin2_rte",
+                                "group": "semantica",
+                                "metric_name": "accuracy",
+                                "metrics": {"accuracy": 0.82},
+                                "num_examples": 50,
+                                "inference_time_sec": 5.0,
+                                "think_mode": "off",
+                                "raw_predictions": ["entailment"],
+                            },
+                        }
+                    },
+                }
+            ]
 
             builder = ReportBuilder(results, output_dir=tmpdir)
             builder.build_all()

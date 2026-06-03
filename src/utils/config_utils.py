@@ -29,6 +29,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def merge_configs(base: dict, override: dict) -> dict:
     """Deep merge override into base config. Returns new dict (no mutation of base)."""
     import copy
+
     result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):

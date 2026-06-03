@@ -37,7 +37,9 @@ def format_gemma4_chat(
             formatted += f"{GEMMA4_USER_PREFIX}{content}{GEMMA4_USER_SUFFIX}"
         elif role in ("model", "assistant"):
             if use_think:
-                formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
+                formatted += (
+                    f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
+                )
             else:
                 formatted += f"{GEMMA4_MODEL_PREFIX}{content}{GEMMA4_MODEL_SUFFIX}"
 
@@ -125,6 +127,7 @@ class InstructionDataBuilder:
                         {"role": "model", "content": example["output"]},
                     ]
                 }
+
             return ds.map(convert_alpaca, remove_columns=columns)
 
         elif "conversations" in columns:
@@ -135,6 +138,7 @@ class InstructionDataBuilder:
                     role = "user" if turn["from"] in ("human", "user") else "model"
                     messages.append({"role": role, "content": turn["value"]})
                 return {"messages": messages}
+
             return ds.map(convert_sharegpt, remove_columns=columns)
 
         elif "messages" in columns:
@@ -142,6 +146,7 @@ class InstructionDataBuilder:
             return ds
 
         elif "prompt" in columns and "response" in columns:
+
             def convert_prompt_response(example):
                 return {
                     "messages": [
@@ -149,6 +154,7 @@ class InstructionDataBuilder:
                         {"role": "model", "content": example["response"]},
                     ]
                 }
+
             return ds.map(convert_prompt_response, remove_columns=columns)
 
         else:
@@ -194,17 +200,11 @@ class InstructionDataBuilder:
 
             if self.sft_cfg.get("train_on_completions_only", True):
                 # Mask everything before the model response
-                response_template = self.sft_cfg.get(
-                    "response_template", GEMMA4_MODEL_PREFIX
-                )
-                response_token_ids = tokenizer.encode(
-                    response_template, add_special_tokens=False
-                )
+                response_template = self.sft_cfg.get("response_template", GEMMA4_MODEL_PREFIX)
+                response_token_ids = tokenizer.encode(response_template, add_special_tokens=False)
 
                 # Find response start positions and mask prefix
-                labels = self._mask_prompt_tokens(
-                    input_ids, labels, response_token_ids
-                )
+                labels = self._mask_prompt_tokens(input_ids, labels, response_token_ids)
 
             tokenized["labels"] = labels
             return tokenized

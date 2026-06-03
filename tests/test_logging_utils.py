@@ -34,6 +34,7 @@ class TestGetLogger:
     def test_log_level_respected(self):
         logger = get_logger("test_level", level="ERROR")
         import logging
+
         assert logger.level == logging.ERROR
 
 

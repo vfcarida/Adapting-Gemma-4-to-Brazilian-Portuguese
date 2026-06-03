@@ -138,22 +138,56 @@ class TestTaskPromptTemplate:
 
     def test_all_tasks_have_instructions(self):
         expected_tasks = [
-            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
-            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
-            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
-            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
-            "mmlu_en", "hellaswag_en", "arc_en",
+            "enem",
+            "bluex",
+            "assin2_rte",
+            "assin2_sts",
+            "copa_pt",
+            "boolq_pt",
+            "mrpc_pt",
+            "rte_pt",
+            "hatebr",
+            "tweet_sentbr",
+            "oab_bench",
+            "broverbs",
+            "capitu",
+            "math_pt",
+            "lener_br",
+            "legalbench_br",
+            "publichearing_br",
+            "donotanswer_pt",
+            "xlsum_pt",
+            "mmlu_en",
+            "hellaswag_en",
+            "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_INSTRUCTIONS, f"Faltando instrução para {task}"
 
     def test_all_tasks_have_formatters(self):
         expected_tasks = [
-            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
-            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
-            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
-            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
-            "mmlu_en", "hellaswag_en", "arc_en",
+            "enem",
+            "bluex",
+            "assin2_rte",
+            "assin2_sts",
+            "copa_pt",
+            "boolq_pt",
+            "mrpc_pt",
+            "rte_pt",
+            "hatebr",
+            "tweet_sentbr",
+            "oab_bench",
+            "broverbs",
+            "capitu",
+            "math_pt",
+            "lener_br",
+            "legalbench_br",
+            "publichearing_br",
+            "donotanswer_pt",
+            "xlsum_pt",
+            "mmlu_en",
+            "hellaswag_en",
+            "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_FORMATTERS, f"Faltando formatador para {task}"

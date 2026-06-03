@@ -114,7 +114,10 @@ class LocalMetricsCallback(TrainerCallback):
         """Persist evaluation metrics with an 'eval' event marker."""
         if metrics:
             self.metrics_logger.log(
-                {"event": "eval", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))}},
+                {
+                    "event": "eval",
+                    **{k: v for k, v in metrics.items() if isinstance(v, (int, float))},
+                },
                 step=state.global_step,
             )
 

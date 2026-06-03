@@ -45,9 +45,7 @@ class TestPairedBootstrap:
     def test_equal_models(self):
         gold = ["A"] * 100
         preds = ["A"] * 70 + ["B"] * 30
-        result = paired_bootstrap_test(
-            preds, preds, gold, accuracy, "accuracy", n_bootstrap=200
-        )
+        result = paired_bootstrap_test(preds, preds, gold, accuracy, "accuracy", n_bootstrap=200)
         # Identical predictions: A never beats B (score_a == score_b always)
         # So wins_a=0, p_value = 1.0 (cannot reject null that B >= A)
         assert result["p_value_a_gt_b"] >= 0.5

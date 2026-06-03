@@ -17,7 +17,9 @@ class Assin2RTETask(BaseTask):
             example = {
                 "premise": item.get("premise", item.get("sentence1", "")),
                 "hypothesis": item.get("hypothesis", item.get("sentence2", "")),
-                "label": "entailment" if item.get("entailment_judgment", 0) == 1 else "not_entailment",
+                "label": "entailment"
+                if item.get("entailment_judgment", 0) == 1
+                else "not_entailment",
             }
             examples.append(example)
         return examples

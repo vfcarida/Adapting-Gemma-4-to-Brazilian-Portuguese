@@ -108,14 +108,16 @@ class ReportBuilder:
                     # Use the benchmark's declared primary metric
                     primary_metric = bench_result.get("metric_name", "accuracy")
                     score = metrics.get(primary_metric, metrics.get("accuracy", 0))
-                    rows.append({
-                        "model": model_name,
-                        "think_mode": mode_key,
-                        "benchmark": bench_name,
-                        "group": bench_result.get("group", ""),
-                        "metric": primary_metric,
-                        "score": score,
-                    })
+                    rows.append(
+                        {
+                            "model": model_name,
+                            "think_mode": mode_key,
+                            "benchmark": bench_name,
+                            "group": bench_result.get("group", ""),
+                            "metric": primary_metric,
+                            "score": score,
+                        }
+                    )
 
         df = pd.DataFrame(rows)
 
@@ -171,13 +173,15 @@ class ReportBuilder:
 
                 # Compute macro average per group
                 for group, scores in group_scores.items():
-                    rows.append({
-                        "model": model_name,
-                        "think_mode": mode_key,
-                        "group": group,
-                        "macro_avg": float(np.mean(scores)),
-                        "n_benchmarks": len(scores),
-                    })
+                    rows.append(
+                        {
+                            "model": model_name,
+                            "think_mode": mode_key,
+                            "group": group,
+                            "macro_avg": float(np.mean(scores)),
+                            "n_benchmarks": len(scores),
+                        }
+                    )
 
         df = pd.DataFrame(rows)
         df.to_csv(self.output_dir / "group_averages.csv", index=False)
@@ -191,7 +195,11 @@ class ReportBuilder:
 
         Saves: best_per_benchmark.csv
         """
-        df = pd.read_csv(self.output_dir / "results_full.csv") if (self.output_dir / "results_full.csv").exists() else pd.DataFrame()
+        df = (
+            pd.read_csv(self.output_dir / "results_full.csv")
+            if (self.output_dir / "results_full.csv").exists()
+            else pd.DataFrame()
+        )
         if df.empty:
             return
 
@@ -271,7 +279,11 @@ class ReportBuilder:
 
         # Plot 1: Bar chart of group averages by model
         fig, ax = plt.subplots(figsize=(12, 6))
-        group_df = pd.read_csv(self.output_dir / "group_averages.csv") if (self.output_dir / "group_averages.csv").exists() else pd.DataFrame()
+        group_df = (
+            pd.read_csv(self.output_dir / "group_averages.csv")
+            if (self.output_dir / "group_averages.csv").exists()
+            else pd.DataFrame()
+        )
         if not group_df.empty:
             pivot = group_df.pivot_table(index="group", columns="model", values="macro_avg")
             pivot.plot(kind="bar", ax=ax)
@@ -308,7 +320,11 @@ class ReportBuilder:
         """
         import matplotlib.pyplot as plt
 
-        group_df = pd.read_csv(self.output_dir / "group_averages.csv") if (self.output_dir / "group_averages.csv").exists() else pd.DataFrame()
+        group_df = (
+            pd.read_csv(self.output_dir / "group_averages.csv")
+            if (self.output_dir / "group_averages.csv").exists()
+            else pd.DataFrame()
+        )
         if group_df.empty:
             return
 

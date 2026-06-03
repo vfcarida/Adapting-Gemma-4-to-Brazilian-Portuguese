@@ -39,9 +39,11 @@ class CPTTrainer:
         start_time = time.time()
 
         # Load model config
-        model_cfg = config if isinstance(
-            (config := self.config.get("model_config")), dict
-        ) else load_config(config)
+        model_cfg = (
+            config
+            if isinstance((config := self.config.get("model_config")), dict)
+            else load_config(config)
+        )
 
         # Load data config
         data_cfg = self.config.get("data_config")
@@ -70,10 +72,18 @@ class CPTTrainer:
                 r=lora_cfg.get("r", 64),
                 lora_alpha=lora_cfg.get("lora_alpha", 128),
                 lora_dropout=lora_cfg.get("lora_dropout", 0.05),
-                target_modules=lora_cfg.get("target_modules", [
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
-                ]),
+                target_modules=lora_cfg.get(
+                    "target_modules",
+                    [
+                        "q_proj",
+                        "k_proj",
+                        "v_proj",
+                        "o_proj",
+                        "gate_proj",
+                        "up_proj",
+                        "down_proj",
+                    ],
+                ),
                 task_type=lora_cfg.get("task_type", "CAUSAL_LM"),
                 bias=lora_cfg.get("bias", "none"),
             )
@@ -157,9 +167,7 @@ class CPTTrainer:
         ]
 
         # Data collator
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=tokenizer, mlm=False
-        )
+        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
         # Initialize trainer
         trainer = Trainer(
@@ -217,6 +225,7 @@ def main():
     # Apply overrides
     if args.override:
         from src.utils.config_utils import merge_configs
+
         overrides = {}
         for o in args.override:
             key, value = o.split("=", 1)

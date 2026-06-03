@@ -109,9 +109,7 @@ class TokenizerAudit:
             "num_samples": len(texts),
         }
 
-    def compare_with(
-        self, other_tokenizer, other_name: str, texts: list[str]
-    ) -> dict[str, Any]:
+    def compare_with(self, other_tokenizer, other_name: str, texts: list[str]) -> dict[str, Any]:
         """Compare this tokenizer against another on the same texts.
 
         Useful for measuring how much less efficient Gemma 4's tokenizer is

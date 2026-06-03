@@ -53,8 +53,7 @@ def create_peft_config(method: str, config_dict: dict[str, Any] | None = None):
 
     if method not in SUPPORTED_METHODS:
         raise ValueError(
-            f"Método '{method}' não suportado. "
-            f"Métodos disponíveis: {SUPPORTED_METHODS}"
+            f"Método '{method}' não suportado. Métodos disponíveis: {SUPPORTED_METHODS}"
         )
 
     if method == "lora":
@@ -74,9 +73,7 @@ def create_peft_config(method: str, config_dict: dict[str, Any] | None = None):
         return _create_adapter_config(config_dict)
 
 
-def _create_lora_config(
-    config_dict: dict[str, Any], use_dora: bool = False
-) -> LoraConfig:
+def _create_lora_config(config_dict: dict[str, Any], use_dora: bool = False) -> LoraConfig:
     """
     Cria configuração LoRA/DoRA/QLoRA.
 
