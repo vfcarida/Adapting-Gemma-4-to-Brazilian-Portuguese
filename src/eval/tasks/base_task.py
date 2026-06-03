@@ -4,6 +4,10 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any
 
+from src.utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 class BaseTask(ABC):
     """Abstract base class for evaluation tasks."""
@@ -90,15 +94,19 @@ class BaseTask(ABC):
         try:
             ds = load_dataset(hub_id, **kwargs)
             return [dict(ex) for ex in ds]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load split '{split}' from {hub_id}: {e}")
             # Try other splits
             for fallback_split in ["validation", "train"]:
                 try:
                     kwargs["split"] = fallback_split
                     ds = load_dataset(hub_id, **kwargs)
+                    logger.info(f"Loaded fallback split '{fallback_split}' for {hub_id}")
                     return [dict(ex) for ex in ds]
-                except Exception:
+                except Exception as fallback_e:
+                    logger.debug(f"Fallback split '{fallback_split}' failed: {fallback_e}")
                     continue
+        logger.error(f"Could not load any split from {hub_id}")
         return []
 
     def _load_from_local(self, path: str) -> list[dict]:

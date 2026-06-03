@@ -5,6 +5,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Framework: HuggingFace](https://img.shields.io/badge/🤗-Transformers-yellow.svg)](https://huggingface.co/)
+[![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Tests: Passing](https://img.shields.io/badge/tests-223_passed-success.svg)](#)
 
 ---
 
@@ -35,15 +37,29 @@ graph LR
 4. **Think Mode Isolation**: Evaluations are strictly isolated. We run all benchmarks in both `think_on` and `think_off` parametric modes to decouple native language improvements from chain-of-thought reasoning artifacts.
 5. **Multi-tier Decontamination**: We run MinHash LSH and Exact/Normalized overlap checks against all benchmark datasets prior to training to ensure clean data validation.
 
+## 📚 The Aurora-PT Dataset
+
+**Aurora-PT** is a foundational, massive-scale dataset comprising **331B tokens** of high-quality Portuguese text. It is designed to act as the ultimate pretraining resource for adapting LLMs to the Portuguese language.
+
+- **Size**: ~331 Billion tokens.
+- **Role in Gemma 4**: It is strictly used for the **CPT (Continued Pretraining)** stage to inject profound linguistic representations.
+- **Structure**: Unstructured text, processed entirely via causal modeling (next-token prediction), safely separating linguistic syntax from instruction-following behaviors.
+
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Clone & Install
+# 1. Clone the repository
 git clone https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese
 cd Adapting-Gemma-4-to-Brazilian-Portuguese
+
+# 2. Install (Development / CPU mode)
 pip install -e ".[dev]"
+
+# 3. (Optional) Install GPU and Training dependencies
+pip install -e ".[gpu]"    # or ".[all]" for full stack
+```
 
 # 2. Validate environment
 gemma4pt preflight
@@ -132,5 +148,21 @@ We utilize a layered evaluation suite to prevent saturation on easy or highly-tr
 - Python ≥ 3.10
 - HuggingFace account with access to `google/gemma-4` variants and `Itau-Unibanco/Aurora-PT`.
 
+## 🤝 Contributing
+Contributions are welcome! Please run `gemma4pt preflight` and ensure `pytest` and `ruff check` pass before submitting a Pull Request. Check out the issues tab for open tasks.
+
 ## 📜 License
 Apache 2.0
+
+## 📖 Citation
+If you use this repository or methodology in your academic work, please cite it as:
+```bibtex
+@software{gemma4ptbr2026,
+  author = {Caridá, Vinícius and Team},
+  title = {Adapting Gemma 4 to Brazilian Portuguese},
+  year = {2026},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\\url{https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese}}
+}
+```

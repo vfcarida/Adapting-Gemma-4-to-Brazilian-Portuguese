@@ -51,6 +51,8 @@ class ContaminationChecker:
         self.benchmark_texts = benchmark_texts
         self.benchmark_normalized = [normalize_text(t) for t in benchmark_texts]
         self.benchmark_hashes = {compute_hash(t) for t in benchmark_texts}
+        if not HAS_DATASKETCH:
+            logger.warning("datasketch is not installed. Fuzzy matching will be disabled and will silently pass.")
         self._build_minhash_index()
 
     def _build_minhash_index(self, num_perm: int = 128):
