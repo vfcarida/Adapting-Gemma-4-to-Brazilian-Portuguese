@@ -280,23 +280,47 @@ def merge(
     cpt_model: str = typer.Option(..., help="CPT model path"),
     alpha: list[float] = typer.Option([1.0], help="Alpha values para sweep"),
     output_dir: str = typer.Option("outputs/residual_merge", help="Diretório de saída"),
+    method: str = typer.Option("task_arithmetic", help="Merge method: task_arithmetic, ties, dare_linear, dare_ties"),
+    density: float = typer.Option(1.0, help="Weight density fraction for TIES/DARE"),
+    seed: int = typer.Option(42, help="Random seed for DARE drop"),
     dry_run: bool = typer.Option(False, help=DRY_RUN_HELP),
 ):
-    """Executa Residual Merge (Task Arithmetic)."""
+    """Executa Residual Merge (Task Arithmetic, TIES, DARE)."""
     if dry_run:
         typer.echo("[dry-run] Merge seria executado:")
         typer.echo(f"  Base: {base_model}")
         typer.echo(f"  Instruct: {instruct_model}")
         typer.echo(f"  CPT: {cpt_model}")
         typer.echo(f"  Alphas: {alpha}")
+        typer.echo(f"  Method: {method}")
+        typer.echo(f"  Density: {density}")
+        typer.echo(f"  Seed: {seed}")
         return
 
     from src.train.residual_merge import alpha_sweep, compute_residual_merge
 
     if len(alpha) == 1:
-        compute_residual_merge(base_model, instruct_model, cpt_model, alpha[0], output_dir)
+        compute_residual_merge(
+            base_model_id=base_model,
+            instruct_model_id=instruct_model,
+            cpt_model_path=cpt_model,
+            alpha=alpha[0],
+            output_dir=output_dir,
+            method=method,
+            density=density,
+            seed=seed,
+        )
     else:
-        alpha_sweep(base_model, instruct_model, cpt_model, alpha, output_dir)
+        alpha_sweep(
+            base_model_id=base_model,
+            instruct_model_id=instruct_model,
+            cpt_model_path=cpt_model,
+            alphas=alpha,
+            output_dir=output_dir,
+            method=method,
+            density=density,
+            seed=seed,
+        )
 
 
 # =============================================================================

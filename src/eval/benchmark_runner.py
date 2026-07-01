@@ -79,41 +79,103 @@ class BenchmarkRunner:
         Returns:
             Dict with model metadata and nested benchmark results.
         """
+        import gc
         set_seed(self.seed)
         benchmarks = self.config.get("benchmarks", {})
         results = {"model_id": model_id, "model_name": model_name, "benchmarks": {}}
 
+        # Check if we actually need to run any fresh benchmarks
+        any_fresh = False
         for think_mode in self.think_modes:
-            mode_key = f"think_{think_mode}"
-            results["benchmarks"][mode_key] = {}
-
             for bench_name, bench_cfg in benchmarks.items():
                 if not bench_cfg.get("enabled", True):
                     continue
-
-                logger.info(f"Running {bench_name} (think={think_mode}) on {model_name}")
-
-                # Check cache first (avoids re-running expensive inference)
                 cache_key = self._cache_key(model_id, bench_name, think_mode)
-                cached = self._load_cache(cache_key)
-                if cached:
-                    logger.info(f"  Using cached result for {bench_name}")
-                    results["benchmarks"][mode_key][bench_name] = cached
-                    continue
+                if not self._load_cache(cache_key):
+                    any_fresh = True
+                    break
+            if any_fresh:
+                break
 
-                # Run the benchmark fresh
-                bench_result = self._run_single_benchmark(
-                    model_id, bench_name, bench_cfg, think_mode
+        loaded_model = None
+        loaded_tokenizer = None
+        is_actually_using_vllm = False
+
+        if any_fresh:
+            if self.use_vllm:
+                try:
+                    from vllm import LLM
+                    logger.info(f"Initializing vLLM engine for model: {model_id}...")
+                    loaded_model = LLM(
+                        model=model_id,
+                        dtype="bfloat16",
+                        trust_remote_code=True,
+                        max_model_len=8192,
+                    )
+                    is_actually_using_vllm = True
+                except ImportError:
+                    logger.warning("vLLM not available, falling back to HF inference")
+
+            if not is_actually_using_vllm:
+                logger.info(f"Loading HF model and tokenizer for: {model_id}...")
+                loaded_tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+                loaded_model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    trust_remote_code=True,
                 )
-                results["benchmarks"][mode_key][bench_name] = bench_result
+                loaded_model.eval()
 
-                # Persist to cache
-                self._save_cache(cache_key, bench_result)
+        try:
+            for think_mode in self.think_modes:
+                mode_key = f"think_{think_mode}"
+                results["benchmarks"][mode_key] = {}
+
+                for bench_name, bench_cfg in benchmarks.items():
+                    if not bench_cfg.get("enabled", True):
+                        continue
+
+                    logger.info(f"Running {bench_name} (think={think_mode}) on {model_name}")
+
+                    # Check cache first (avoids re-running expensive inference)
+                    cache_key = self._cache_key(model_id, bench_name, think_mode)
+                    cached = self._load_cache(cache_key)
+                    if cached:
+                        logger.info(f"  Using cached result for {bench_name}")
+                        results["benchmarks"][mode_key][bench_name] = cached
+                        continue
+
+                    # Run the benchmark fresh
+                    bench_result = self._run_single_benchmark(
+                        model_id=model_id,
+                        bench_name=bench_name,
+                        bench_cfg=bench_cfg,
+                        think_mode=think_mode,
+                        loaded_model=loaded_model,
+                        loaded_tokenizer=loaded_tokenizer,
+                        use_vllm=is_actually_using_vllm
+                    )
+                    results["benchmarks"][mode_key][bench_name] = bench_result
+
+                    # Persist to cache
+                    self._save_cache(cache_key, bench_result)
+        finally:
+            if loaded_model is not None:
+                logger.info("Unloading model resources...")
+                del loaded_model
+            if loaded_tokenizer is not None:
+                del loaded_tokenizer
+            if any_fresh:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         return results
 
     def _run_single_benchmark(
-        self, model_id: str, bench_name: str, bench_cfg: dict, think_mode: str
+        self, model_id: str, bench_name: str, bench_cfg: dict, think_mode: str,
+        loaded_model: Any = None, loaded_tokenizer: Any = None, use_vllm: bool = False
     ) -> dict[str, Any]:
         """Run a single benchmark: load data → format prompts → inference → score.
 
@@ -141,10 +203,10 @@ class BenchmarkRunner:
 
         # Step 3: Run model inference (batched)
         start_time = time.time()
-        if self.use_vllm:
-            predictions = self._inference_vllm(model_id, prompts, think_mode)
+        if use_vllm:
+            predictions = self._inference_vllm(model_id, prompts, think_mode, loaded_model)
         else:
-            predictions = self._inference_hf(model_id, prompts, think_mode)
+            predictions = self._inference_hf(model_id, prompts, think_mode, loaded_model, loaded_tokenizer)
         inference_time = time.time() - start_time
 
         # Step 4: Parse predictions (strip thinking, extract answer)
@@ -175,29 +237,11 @@ class BenchmarkRunner:
         logger.info(f"  {bench_name}: {metrics}")
         return result
 
-    def _inference_hf(self, model_id: str, prompts: list[str], think_mode: str) -> list[str]:
+    def _inference_hf(self, model_id: str, prompts: list[str], think_mode: str, model: Any, tokenizer: Any) -> list[str]:
         """Run inference using HuggingFace Transformers (generate API).
 
-        Loads the model once and processes all prompts in batches.
-        Slower than vLLM but works without additional dependencies.
-
-        Args:
-            model_id: Model to load (HF ID or local path).
-            prompts: List of formatted prompts.
-            think_mode: Thinking mode (affects generation but not logic here).
-
-        Returns:
-            List of raw model text outputs (one per prompt).
+        Uses pre-loaded model and tokenizer to process all prompts in batches.
         """
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        model.eval()
-
         predictions = []
         for i in tqdm(range(0, len(prompts), self.batch_size), desc="Inference"):
             batch = prompts[i : i + self.batch_size]
@@ -222,30 +266,11 @@ class BenchmarkRunner:
                 pred = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 predictions.append(pred)
 
-        # Free GPU memory after inference
-        del model
-        torch.cuda.empty_cache()
         return predictions
 
-    def _inference_vllm(self, model_id: str, prompts: list[str], think_mode: str) -> list[str]:
-        """Run inference using vLLM for 3-5x faster generation.
-
-        vLLM uses PagedAttention and continuous batching for efficient
-        LLM inference. Falls back to HF if vLLM is not installed.
-
-        Args:
-            model_id: Model to load.
-            prompts: List of formatted prompts.
-            think_mode: Thinking mode.
-
-        Returns:
-            List of raw model text outputs.
-        """
-        try:
-            from vllm import LLM, SamplingParams
-        except ImportError:
-            logger.warning("vLLM not available, falling back to HF inference")
-            return self._inference_hf(model_id, prompts, think_mode)
+    def _inference_vllm(self, model_id: str, prompts: list[str], think_mode: str, llm: Any) -> list[str]:
+        """Run inference using pre-loaded vLLM engine."""
+        from vllm import SamplingParams
 
         sampling_params = SamplingParams(
             temperature=self.temperature,
@@ -253,18 +278,9 @@ class BenchmarkRunner:
             seed=self.seed,
         )
 
-        llm = LLM(
-            model=model_id,
-            dtype="bfloat16",
-            trust_remote_code=True,
-            max_model_len=8192,
-        )
-
         outputs = llm.generate(prompts, sampling_params)
         predictions = [o.outputs[0].text for o in outputs]
 
-        del llm
-        torch.cuda.empty_cache()
         return predictions
 
     def _cache_key(self, model_id: str, bench_name: str, think_mode: str) -> str:

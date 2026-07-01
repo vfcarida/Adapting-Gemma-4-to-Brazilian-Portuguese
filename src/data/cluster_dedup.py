@@ -10,6 +10,86 @@ import hashlib
 import random
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
+import struct
+
+def _find_lsh_params(threshold: float, num_perm: int):
+    best_b, best_r = 1, num_perm
+    min_err = 1.0
+    for b in range(1, num_perm + 1):
+        r = num_perm // b
+        if r == 0:
+            continue
+        t = (1.0 / b) ** (1.0 / r)
+        err = abs(t - threshold)
+        if err < min_err:
+            min_err = err
+            best_b = b
+            best_r = r
+    return best_b, best_r
+
+class FallbackMinHash:
+    _prime = (1 << 61) - 1
+    _max_hash = (1 << 32) - 1
+
+    def __init__(self, num_perm=128, hashvalues=None, seed=1):
+        self.num_perm = num_perm
+        if hashvalues is not None:
+            self.hashvalues = list(hashvalues)
+        else:
+            self.hashvalues = [self._max_hash] * num_perm
+
+        generator = random.Random(seed)
+        self._a = [generator.randint(1, self._prime - 1) for _ in range(num_perm)]
+        self._b = [generator.randint(0, self._prime - 1) for _ in range(num_perm)]
+
+    def update(self, b: bytes):
+        h = int(hashlib.md5(b).hexdigest()[:8], 16)
+        for i in range(self.num_perm):
+            ph = (self._a[i] * h + self._b[i]) % self._prime
+            ph = ph & self._max_hash
+            if ph < self.hashvalues[i]:
+                self.hashvalues[i] = ph
+
+    def jaccard(self, other: "FallbackMinHash") -> float:
+        if self.num_perm != other.num_perm:
+            raise ValueError("Number of permutations must match")
+        matches = sum(1 for x, y in zip(self.hashvalues, other.hashvalues) if x == y)
+        return matches / self.num_perm
+
+class FallbackMinHashLSH:
+    def __init__(self, threshold=0.5, num_perm=128):
+        self.threshold = threshold
+        self.num_perm = num_perm
+        self.b, self.r = _find_lsh_params(threshold, num_perm)
+        self.hashtables = [defaultdict(set) for _ in range(self.b)]
+        self.keys = {}
+
+    def insert(self, key: str, minhash: FallbackMinHash):
+        if len(minhash.hashvalues) != self.num_perm:
+            raise ValueError("MinHash number of permutations mismatch")
+        if key in self.keys:
+            raise ValueError(f"Key {key} already exists in LSH")
+
+        band_hashes = []
+        for i in range(self.b):
+            band = tuple(minhash.hashvalues[i * self.r : (i + 1) * self.r])
+            band_hash = hashlib.sha256(struct.pack(f"{len(band)}I", *band)).hexdigest()
+            self.hashtables[i][band_hash].add(key)
+            band_hashes.append(band_hash)
+
+        self.keys[key] = band_hashes
+
+    def query(self, minhash: FallbackMinHash) -> list[str]:
+        if len(minhash.hashvalues) != self.num_perm:
+            raise ValueError("MinHash number of permutations mismatch")
+
+        candidates = set()
+        for i in range(self.b):
+            band = tuple(minhash.hashvalues[i * self.r : (i + 1) * self.r])
+            band_hash = hashlib.sha256(struct.pack(f"{len(band)}I", *band)).hexdigest()
+            if band_hash in self.hashtables[i]:
+                candidates.update(self.hashtables[i][band_hash])
+        return list(candidates)
 
 # Tentativa de importar datasketch para MinHash LSH
 try:
@@ -17,7 +97,9 @@ try:
 
     HAS_DATASKETCH = True
 except ImportError:
-    HAS_DATASKETCH = False
+    MinHash = FallbackMinHash
+    MinHashLSH = FallbackMinHashLSH
+    HAS_DATASKETCH = True
 
 
 class ClusterDedup:

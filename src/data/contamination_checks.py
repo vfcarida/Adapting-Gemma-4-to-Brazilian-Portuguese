@@ -14,7 +14,9 @@ try:
 
     HAS_DATASKETCH = True
 except ImportError:
-    HAS_DATASKETCH = False
+    from src.data.cluster_dedup import MinHash, MinHashLSH
+
+    HAS_DATASKETCH = True
 
 from src.utils.logging_utils import get_logger
 

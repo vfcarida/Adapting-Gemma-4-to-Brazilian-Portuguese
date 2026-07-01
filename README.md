@@ -17,17 +17,50 @@ This repository implements a rigorous **five-stage adaptation pipeline** intende
 Our strategy strictly separates **Language Adaptation (CPT)** from **Instruction Alignment (SFT/DPO)**, preventing the catastrophic forgetting often seen when continuously pretraining on instruction-tuned models.
 
 ```mermaid
-graph LR
-    A[Base Model<br>Gemma 4] --> B[CPT<br>Aurora-PT + Replay]
-    B --> C[Residual Merge<br>Task Arithmetic]
-    B --> D[SFT<br>PT-BR Chat]
-    D --> E[DPO / ORPO<br>Preference Tuning]
-    
-    style A fill:#e1f5fe,stroke:#01579b
-    style B fill:#fff3e0,stroke:#e65100
-    style C fill:#e8f5e9,stroke:#1b5e20
-    style D fill:#e8f5e9,stroke:#1b5e20
-    style E fill:#f3e5f5,stroke:#4a148c
+graph TD
+    subgraph Pre-flight & Validation
+        PF[gemma4pt preflight<br>Check Env / CUDA / Storage]
+        DC[gemma4pt contamination-check<br>MinHash LSH / Exact / Ngram]
+        TA[gemma4pt tokenizer-audit<br>Fertility Analysis]
+    end
+
+    subgraph Data Pipeline
+        AP[Aurora-PT Dataset<br>331B Tokens] --> LB[AuroraLoader<br>Sequence Packing / Mix Replay]
+    end
+
+    subgraph Training Stage
+        GM[Gemma-4 Base] --> CPT[train-cpt<br>Continued Pretraining]
+        LB --> CPT
+    end
+
+    subgraph Alignment & Merging
+        CPT --> AM[Weight Merging]
+        GM --> AM
+        IT[Gemma-4 IT] --> AM
+        
+        subgraph Merging Algorithms
+            AM --> |Task Arithmetic| TA_M[cpt + alpha * residual]
+            AM --> |TIES-Merge| TI_M[Trim + Elect Sign + Merge]
+            AM --> |DARE-TIES| DT_M[Drop + Rescale + TIES]
+        end
+    end
+
+    subgraph Evaluation
+        TA_M & TI_M & DT_M --> EV[gemma4pt eval<br>Single-Load Memory Cache]
+        EV --> RB[gemma4pt report<br>Findings & Stats]
+    end
+
+    style PF fill:#e1f5fe,stroke:#01579b
+    style DC fill:#e1f5fe,stroke:#01579b
+    style TA fill:#e1f5fe,stroke:#01579b
+    style LB fill:#fff3e0,stroke:#e65100
+    style CPT fill:#fff3e0,stroke:#e65100
+    style AM fill:#e8f5e9,stroke:#1b5e20
+    style TA_M fill:#f3e5f5,stroke:#4a148c
+    style TI_M fill:#f3e5f5,stroke:#4a148c
+    style DT_M fill:#f3e5f5,stroke:#4a148c
+    style EV fill:#ffe0b2,stroke:#e65100
+    style RB fill:#ffe0b2,stroke:#e65100
 ```
 
 ### 🔬 Core Methodology & Golden Rules
@@ -92,6 +125,42 @@ gemma4pt manifest           # Manifesto reprodutibilidade
 gemma4pt run-all            # Pipeline completo
 ```
 *(All operations support `--dry-run`, `--tiny`, and `--cpu-only` flags).*
+
+---
+
+## 🧬 Advanced Weight Merging
+
+To recover instruction capability after CPT, this pipeline implements state-of-the-art parameter merging algorithms inside `src/train/residual_merge.py`. These prevent weight interference and sign conflicts:
+
+*   **Task Arithmetic (Linear):** Direct addition of the instruction task vector: `CPT + alpha * (IT - Base)`.
+*   **TIES-Merging:** Trims small parameter deltas, elects consensus signs across task vectors, and merges only agreeing updates (averaging the updates).
+*   **DARE-Linear:** Prunes weights randomly using a Bernoulli drop mask and rescales remaining weights by `1 / density` to preserve expectation, followed by a linear merge.
+*   **DARE-TIES:** Combines random drop-and-rescale (DARE) with consensus sign election and disjoint merging (TIES).
+
+### Merging CLI Usage
+```bash
+# Run TIES-Merge with density 0.6 and alpha 0.8
+gemma4pt merge \
+  --base-model google/gemma-4-E4B \
+  --instruct-model google/gemma-4-E4B-it \
+  --cpt-model outputs/cpt_main/final \
+  --alpha 0.8 \
+  --method ties \
+  --density 0.6 \
+  --output-dir outputs/residual_merge
+
+# Run DARE-TIES merge sweep over multiple alpha values
+gemma4pt merge \
+  --base-model google/gemma-4-E4B \
+  --instruct-model google/gemma-4-E4B-it \
+  --cpt-model outputs/cpt_main/final \
+  --alpha 0.6 0.8 1.0 1.2 \
+  --method dare_ties \
+  --density 0.5 \
+  --output-dir outputs/residual_merge
+```
+
+---
 
 ## 📚 Documentation
 
