@@ -4,18 +4,31 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any
 
-from src.utils.logging_utils import get_logger
-
-logger = get_logger(__name__)
-
 
 class BaseTask(ABC):
     """Abstract base class for evaluation tasks."""
 
-    @abstractmethod
     def load_data(self, config: dict[str, Any]) -> list[dict]:
-        """Load task data from hub or local path."""
-        ...
+        """Load task data from hub or local path.
+
+        Default implementation tries hub_id first, then falls back to local_path.
+        Subclasses can override for custom loading logic.
+        """
+        hub_id = config.get("hub_id")
+        subset = config.get("subset")
+        local_path = config.get("local_path")
+        max_samples = config.get("max_samples")
+
+        data = []
+        if hub_id:
+            data = self._load_from_hub(hub_id, subset=subset)
+        if not data and local_path:
+            data = self._load_from_local(local_path)
+
+        if max_samples and len(data) > max_samples:
+            data = data[:max_samples]
+
+        return data
 
     @abstractmethod
     def get_gold_label(self, example: dict) -> Any:
@@ -54,7 +67,8 @@ class BaseTask(ABC):
 
         # 3. "Resposta: X" / "Answer: X" / "alternativa X" / "é X"
         match = re.search(
-            r"(?:resposta|answer|alternativa|é)[^A-Ea-e]*([A-Ea-e])\b", text, re.IGNORECASE
+            r"(?:resposta|answer|alternativa|é)\s*[:\s]\s*([A-Ea-e])\b",
+            text, re.IGNORECASE
         )
         if match:
             return match.group(1).upper()
@@ -84,38 +98,30 @@ class BaseTask(ABC):
         match = re.search(r"(\d+\.?\d*)", text.strip())
         return match.group(1) if match else ""
 
-    def _load_from_hub(
-        self, hub_id: str, subset: str | None = None, split: str = "test"
-    ) -> list[dict]:
+    def _load_from_hub(self, hub_id: str, subset: str | None = None, split: str = "test") -> list[dict]:
         """Load data from HuggingFace Hub."""
         from datasets import load_dataset
-
         kwargs = {"split": split}
         if subset:
             kwargs["name"] = subset
         try:
             ds = load_dataset(hub_id, **kwargs)
             return [dict(ex) for ex in ds]
-        except Exception as e:
-            logger.warning(f"Failed to load split '{split}' from {hub_id}: {e}")
+        except Exception:
             # Try other splits
             for fallback_split in ["validation", "train"]:
                 try:
                     kwargs["split"] = fallback_split
                     ds = load_dataset(hub_id, **kwargs)
-                    logger.info(f"Loaded fallback split '{fallback_split}' for {hub_id}")
                     return [dict(ex) for ex in ds]
-                except Exception as fallback_e:
-                    logger.debug(f"Fallback split '{fallback_split}' failed: {fallback_e}")
+                except Exception:
                     continue
-        logger.error(f"Could not load any split from {hub_id}")
         return []
 
     def _load_from_local(self, path: str) -> list[dict]:
         """Load data from local JSONL file."""
         import json
         from pathlib import Path
-
         p = Path(path)
         if not p.exists():
             return []

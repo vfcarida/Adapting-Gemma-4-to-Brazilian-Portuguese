@@ -1,0 +1,54 @@
+experiment:
+  name: "dpo_e4b_ptbr"
+  description: "DPO on SFT checkpoint (optional stage)"
+  seed: 42
+
+model_config: "configs/model/gemma4_e4b.yaml"
+base_checkpoint: "outputs/sft/final"  # SFT output
+
+training:
+  method: "dpo"
+  use_lora: true
+  num_train_epochs: 1
+  max_steps: 2000
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+
+  learning_rate: 5.0e-6
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+
+  bf16: true
+  gradient_checkpointing: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  task_type: "CAUSAL_LM"
+
+dpo:
+  beta: 0.1
+  loss_type: "sigmoid"
+  max_prompt_length: 1024
+  max_length: 2048
+  # Preference dataset (placeholder - needs pt-BR preference data)
+  dataset_hub_id: null
+  dataset_path: "data/preferences_ptbr.jsonl"
+
+checkpointing:
+  save_steps: 500
+  save_total_limit: 3
+
+logging:
+  logging_steps: 10
+  report_to: ["json"]
+  log_file: "outputs/dpo/train_log.jsonl"
+
+output:
+  output_dir: "outputs/dpo"
+  overwrite_output_dir: false

@@ -1,69 +1,47 @@
-#!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Run All — End-to-End Pipeline                                      ║
-# ║                                                                      ║
-# ║  Stages:                                                             ║
-# ║   1. Tokenizer Audit                                                 ║
-# ║   2. Contamination Checks                                            ║
-# ║   3. Baseline Evaluation                                             ║
-# ║   4. CPT Pilot (Gemma-4-E4B)                                        ║
-# ║   5. Residual Merge                                                  ║
-# ║   6. SFT                                                             ║
-# ║   7. Full Evaluation                                                 ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+#!/bin/bash
 set -euo pipefail
 
+# Run the full pipeline end-to-end
+echo "=========================================="
+echo "  Gemma 4 Portuguese Adaptation Pipeline"
+echo "=========================================="
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a; source "$PROJECT_ROOT/.env"; set +a
-fi
-
-echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║  Gemma 4 PT-BR Adaptation — Full Pipeline                       ║"
-echo "╚══════════════════════════════════════════════════════════════════╝"
-
-# Create output directories
-mkdir -p reports/{eval_results,training_logs} output/{cpt_pilot_e4b,merged,sft}
-
-# ── Stage 1: Data Quality ────────────────────────────────────────────
-echo ""
-echo "▶ Stage 1/7: Tokenizer Audit"
-bash "$SCRIPT_DIR/run_tokenizer_audit.sh"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
 echo ""
-echo "▶ Stage 2/7: Contamination Checks"
-bash "$SCRIPT_DIR/run_contamination_checks.sh"
-
-# ── Stage 2: Baselines ──────────────────────────────────────────────
-echo ""
-echo "▶ Stage 3/7: Baseline Evaluation"
-bash "$SCRIPT_DIR/run_baselines.sh"
-
-# ── Stage 3: Training ───────────────────────────────────────────────
-echo ""
-echo "▶ Stage 4/7: CPT Pilot (Gemma-4-E4B)"
-bash "$SCRIPT_DIR/run_cpt_pilot.sh"
-
-# ── Stage 4: Merge ──────────────────────────────────────────────────
-echo ""
-echo "▶ Stage 5/7: Residual Merge"
-bash "$SCRIPT_DIR/run_residual_merge.sh"
-
-# ── Stage 5: SFT ────────────────────────────────────────────────────
-echo ""
-echo "▶ Stage 6/7: SFT"
-bash "$SCRIPT_DIR/run_sft.sh"
-
-# ── Stage 6: Evaluation ─────────────────────────────────────────────
-echo ""
-echo "▶ Stage 7/7: Full Evaluation"
-bash "$SCRIPT_DIR/run_eval.sh"
+echo "[1/7] Tokenizer Audit"
+bash scripts/run_tokenizer_audit.sh
 
 echo ""
-echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║  ✓ Pipeline Complete!                                            ║"
-echo "║  Reports:  reports/benchmark_report.md                           ║"
-echo "║  Models:   output/sft/final/                                     ║"
-echo "╚══════════════════════════════════════════════════════════════════╝"
+echo "[2/7] Contamination Checks"
+bash scripts/run_contamination_checks.sh
+
+echo ""
+echo "[3/7] Baseline Evaluation"
+bash scripts/run_baselines.sh
+
+echo ""
+echo "[4/7] Continued Pretraining (CPT)"
+bash scripts/run_cpt_main.sh
+
+echo ""
+echo "[5/7] Residual Merge"
+bash scripts/run_residual_merge.sh
+
+echo ""
+echo "[6/7] Supervised Fine-Tuning (SFT)"
+bash scripts/run_sft.sh
+
+echo ""
+echo "[7/7] Full Evaluation"
+bash scripts/run_eval.sh
+
+echo ""
+echo "=========================================="
+echo "  Pipeline Complete!"
+echo "=========================================="
+echo "  Reports: reports/"
+echo "  Models:  outputs/"
+echo "=========================================="

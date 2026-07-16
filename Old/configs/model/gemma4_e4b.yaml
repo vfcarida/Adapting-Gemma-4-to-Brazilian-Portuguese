@@ -1,0 +1,66 @@
+# =============================================================================
+# Configuração do Modelo — Gemma 4 E4B (Trilha Piloto)
+# =============================================================================
+# Modelo: google/gemma-4-E4B (base) / google/gemma-4-E4B-it (instruct)
+# Arquitetura: Mixture of Experts, ~4B parâmetros ativados
+# Uso: Trilha piloto para validação rápida de hipóteses
+
+model:
+  base_id: "google/gemma-4-E4B"
+  instruct_id: "google/gemma-4-E4B-it"
+  family: "gemma4"
+  architecture: "mixture_of_experts"
+  params_total: "4B"
+  dtype: "bfloat16"
+  max_seq_length: 8192
+  attn_implementation: "flash_attention_2"
+  trust_remote_code: true
+
+  # Gemma 4 é multimodal — congela componentes visuais para CPT/SFT text-only
+  text_only_mode: true
+  freeze_vision_encoder: true
+  freeze_multi_modal_projector: true
+
+tokenizer:
+  use_fast: true
+  padding_side: "right"
+  add_eos_token: true
+  # Usar apply_chat_template do tokenizer — NÃO hardcodar template
+  use_apply_chat_template: true
+
+# Template de chat: gerenciado pelo tokenizer via apply_chat_template
+# Estas constantes são fallback caso apply_chat_template não esteja disponível
+chat_template_fallback:
+  bos_token: "<bos>"
+  user_prefix: "<start_of_turn>user\n"
+  user_suffix: "<end_of_turn>\n"
+  model_prefix: "<start_of_turn>model\n"
+  model_suffix: "<end_of_turn>\n"
+  system_prefix: "<start_of_turn>system\n"
+  system_suffix: "<end_of_turn>\n"
+  # Canal de pensamento
+  think_open: "<think>\n"
+  think_close: "</think>\n"
+
+# Configuração de pensamento (think mode)
+thinking:
+  # Ao gerar com think_on, injetar <think> após model_prefix
+  # Ao avaliar, strip <think>...</think> do output antes de parsear
+  # Para datasets SEM thinking, usar canal vazio: <think>\n</think>\n
+  empty_channel_for_non_think: true
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+
+# Expansão vocabular (ablação opcional)
+vocab_expansion:
+  enabled: false
+  # Tamanhos a testar: 8k, 16k, 32k tokens adicionais
+  sizes: [8000, 16000, 32000]
+  # Preservar tokens reservados do Gemma 4
+  preserve_special_tokens: true
+  # Método de inicialização para novos embeddings
+  init_method: "mean"  # "mean" | "random" | "subword_mean"

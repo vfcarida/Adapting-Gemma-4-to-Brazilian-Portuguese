@@ -7,16 +7,14 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from tqdm import tqdm
 
 try:
     from datasketch import MinHash, MinHashLSH
-
     HAS_DATASKETCH = True
 except ImportError:
-    from src.data.cluster_dedup import MinHash, MinHashLSH
-
-    HAS_DATASKETCH = True
+    HAS_DATASKETCH = False
 
 from src.utils.logging_utils import get_logger
 
@@ -26,7 +24,6 @@ logger = get_logger(__name__)
 def normalize_text(text: str) -> str:
     """Normalize text for comparison."""
     text = unicodedata.normalize("NFKD", text)
-    text = "".join([c for c in text if not unicodedata.combining(c)])
     text = text.lower()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^\w\s]", "", text)
@@ -54,10 +51,6 @@ class ContaminationChecker:
         self.benchmark_texts = benchmark_texts
         self.benchmark_normalized = [normalize_text(t) for t in benchmark_texts]
         self.benchmark_hashes = {compute_hash(t) for t in benchmark_texts}
-        if not HAS_DATASKETCH:
-            logger.warning(
-                "datasketch is not installed. Fuzzy matching will be disabled and will silently pass."
-            )
         self._build_minhash_index()
 
     def _build_minhash_index(self, num_perm: int = 128):
@@ -138,13 +131,11 @@ class ContaminationChecker:
                 # Compute actual Jaccard
                 jaccard = mh.jaccard(self.minhashes[bench_idx])
                 if jaccard >= threshold:
-                    matches.append(
-                        {
-                            "train_idx": i,
-                            "bench_idx": bench_idx,
-                            "jaccard": float(jaccard),
-                        }
-                    )
+                    matches.append({
+                        "train_idx": i,
+                        "bench_idx": bench_idx,
+                        "jaccard": float(jaccard),
+                    })
                     break  # One match is enough
 
         return {
@@ -225,7 +216,8 @@ def run_contamination_report(
     summary = {}
     for name, result in full_report["benchmarks"].items():
         summary[name] = {
-            method: check["contamination_rate"] for method, check in result["checks"].items()
+            method: check["contamination_rate"]
+            for method, check in result["checks"].items()
         }
     full_report["summary"] = summary
 

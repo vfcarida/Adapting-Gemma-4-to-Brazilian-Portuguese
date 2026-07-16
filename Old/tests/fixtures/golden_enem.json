@@ -1,0 +1,23 @@
+[
+  {
+    "question": "Qual é a capital do Brasil?",
+    "options": ["São Paulo", "Rio de Janeiro", "Brasília", "Salvador", "Belo Horizonte"],
+    "answer": "C",
+    "expected_prompt_contains": ["Qual é a capital", "C) Brasília", "Resposta:"],
+    "expected_parse": "C"
+  },
+  {
+    "question": "Em que ano o Brasil foi descoberto?",
+    "options": ["1492", "1500", "1534", "1822", "1889"],
+    "answer": "B",
+    "expected_prompt_contains": ["B) 1500"],
+    "expected_parse": "B"
+  },
+  {
+    "question": "Qual o maior rio do Brasil em extensão?",
+    "options": ["Paraná", "São Francisco", "Amazonas", "Tocantins", "Madeira"],
+    "answer": "C",
+    "expected_prompt_contains": ["C) Amazonas"],
+    "expected_parse": "C"
+  }
+]

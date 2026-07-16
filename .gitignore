@@ -5,22 +5,36 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# Outputs and data
 outputs/
 reports/figures/
-/data/          # Root /data/ only — NOT src/data/
+/data/
 !src/data/
 !tests/fixtures/
 *.pt
 *.bin
 *.safetensors
+
+# Environment
 .env
+.env.*
+!.env.example
 .venv/
 venv/
+
+# IDE
 .vscode/
 .idea/
 *.swp
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Logs
 wandb/
 *.log
+
+# HF cache
 .cache/

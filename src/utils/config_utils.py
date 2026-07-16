@@ -20,7 +20,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
         if key in config and isinstance(config[key], str):
             nested_path = Path(config[key])
             if not nested_path.is_absolute():
-                nested_path = path.parent / nested_path
+                # Try relative to parent dir first, then relative to cwd
+                candidate = path.parent / nested_path
+                if not candidate.exists():
+                    candidate = Path.cwd() / nested_path
+                nested_path = candidate
             config[key] = load_config(nested_path)
 
     return config
@@ -29,7 +33,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def merge_configs(base: dict, override: dict) -> dict:
     """Deep merge override into base config. Returns new dict (no mutation of base)."""
     import copy
-
     result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):

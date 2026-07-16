@@ -61,9 +61,10 @@ class ReplayMixBuilder:
     ) -> Dataset:
         """Build a specific mixture by name.
 
-        Computes the number of samples for each source based on the ratio
-        relative to the primary dataset size. For example, if primary has
-        10000 samples and English ratio is 0.15, loads ~1500 English samples.
+        Uses ALL primary data and computes replay sizes so the final mixture
+        has the desired proportions. For example, if ratios are
+        {"aurora_pt": 0.85, "english_replay": 0.15} and primary has 10000 samples,
+        the final mixture will be 10000 PT + 1765 EN ≈ 85%/15% split.
 
         Args:
             mixture_name: Key in self.mixtures (e.g., "pt_en", "pt_en_code").
@@ -88,27 +89,32 @@ class ReplayMixBuilder:
         datasets_to_mix = []
         total_primary = len(primary_dataset)
 
+        # Calculate replay sizes relative to primary to achieve target ratios.
+        # If aurora_pt ratio is 0.85, then primary represents 85% of the final mix.
+        # So total_final = total_primary / pt_ratio, and each other source gets
+        # its ratio * total_final samples.
+        pt_ratio = ratios.get("aurora_pt", 1.0)
+        total_final = total_primary / pt_ratio if pt_ratio > 0 else total_primary
+
         for source, ratio in ratios.items():
             if source == "aurora_pt":
-                # Primary Portuguese data — take proportion of full dataset
-                n_samples = int(total_primary * ratio)
-                ds = primary_dataset.select(range(min(n_samples, total_primary)))
-                datasets_to_mix.append(ds)
-                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
+                # Use ALL primary data (don't truncate it)
+                datasets_to_mix.append(primary_dataset)
+                logger.info(f"  {source}: {total_primary} samples (ratio={ratio})")
 
             elif source == "english_replay":
-                # English replay from FineWeb-Edu (educational web text)
-                n_samples = int(total_primary * ratio)
+                # English replay sized to achieve target proportion in final mix
+                n_samples = int(total_final * ratio)
                 ds = self._load_english_replay(n_samples)
                 datasets_to_mix.append(ds)
-                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
+                logger.info(f"  {source}: {len(ds)} samples (target={n_samples}, ratio={ratio})")
 
             elif source == "code":
-                # Code replay from StarCoderData
-                n_samples = int(total_primary * ratio)
+                # Code replay sized to achieve target proportion
+                n_samples = int(total_final * ratio)
                 ds = self._load_code_replay(n_samples)
                 datasets_to_mix.append(ds)
-                logger.info(f"  {source}: {len(ds)} samples (ratio={ratio})")
+                logger.info(f"  {source}: {len(ds)} samples (target={n_samples}, ratio={ratio})")
 
         # Concatenate all sources and shuffle for even distribution
         mixed = concatenate_datasets(datasets_to_mix)

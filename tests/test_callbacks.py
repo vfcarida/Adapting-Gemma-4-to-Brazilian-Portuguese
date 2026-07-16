@@ -1,20 +1,19 @@
 """Tests for training callbacks (requires torch)."""
 
+import pytest
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 pytest.importorskip("torch")
 
 from src.train.callbacks import (
+    ThroughputCallback,
+    LocalMetricsCallback,
     EarlyStoppingOnPlateau,
     GPUMemoryCallback,
-    LocalMetricsCallback,
-    ThroughputCallback,
 )
 
 

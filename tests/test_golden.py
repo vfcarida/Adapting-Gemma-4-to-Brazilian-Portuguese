@@ -26,13 +26,13 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 @pytest.fixture
 def golden_enem():
-    with open(FIXTURES_DIR / "golden_enem.json", encoding="utf-8") as f:
+    with open(FIXTURES_DIR / "golden_enem.json") as f:
         return json.load(f)
 
 
 @pytest.fixture
 def golden_parsing():
-    with open(FIXTURES_DIR / "golden_parsing.json", encoding="utf-8") as f:
+    with open(FIXTURES_DIR / "golden_parsing.json") as f:
         return json.load(f)
 
 
@@ -53,7 +53,8 @@ class TestGoldenPrompts:
             prompt = template.format_prompt(example, think_mode="off")
             for expected_text in example["expected_prompt_contains"]:
                 assert expected_text in prompt, (
-                    f"Expected '{expected_text}' in prompt for question: {example['question'][:50]}"
+                    f"Expected '{expected_text}' in prompt for question: "
+                    f"{example['question'][:50]}"
                 )
 
     def test_enem_prompt_no_answer_leak(self, golden_enem):
@@ -82,10 +83,8 @@ class TestGoldenParsing:
         class TestTask(BaseTask):
             def load_data(self, config):
                 return []
-
             def get_gold_label(self, example):
                 return ""
-
             def parse_prediction(self, raw):
                 return self._extract_letter(raw)
 
@@ -93,7 +92,8 @@ class TestGoldenParsing:
         for case in golden_parsing["letter_extraction"]:
             result = task.parse_prediction(case["input"])
             assert result == case["expected"], (
-                f"parse_prediction('{case['input']}') = '{result}', expected '{case['expected']}'"
+                f"parse_prediction('{case['input']}') = '{result}', "
+                f"expected '{case['expected']}'"
             )
 
     def test_think_stripping(self, golden_parsing):
@@ -127,7 +127,6 @@ class TestGoldenMetrics:
 
     def test_accuracy_perfect(self):
         from src.eval.metrics import compute_metrics_for_task
-
         preds = ["A", "B", "C", "D"]
         golds = ["A", "B", "C", "D"]
         m = compute_metrics_for_task("accuracy", preds, golds)
@@ -135,7 +134,6 @@ class TestGoldenMetrics:
 
     def test_accuracy_zero(self):
         from src.eval.metrics import compute_metrics_for_task
-
         preds = ["A", "A", "A", "A"]
         golds = ["B", "C", "D", "E"]
         m = compute_metrics_for_task("accuracy", preds, golds)
@@ -143,7 +141,6 @@ class TestGoldenMetrics:
 
     def test_accuracy_partial(self):
         from src.eval.metrics import compute_metrics_for_task
-
         preds = ["A", "B", "C", "D", "E"]
         golds = ["A", "B", "X", "Y", "Z"]
         m = compute_metrics_for_task("accuracy", preds, golds)
@@ -152,7 +149,6 @@ class TestGoldenMetrics:
     def test_accuracy_empty(self):
         """Empty predictions should return 0.0 without crashing."""
         from src.eval.metrics import compute_metrics_for_task
-
         # sklearn raises on empty; our wrapper should handle gracefully
         try:
             m = compute_metrics_for_task("accuracy", [], [])
@@ -164,7 +160,6 @@ class TestGoldenMetrics:
     def test_f1_symmetric_on_binary(self):
         """F1 macro should be symmetric when classes are balanced."""
         from src.eval.metrics import compute_metrics_for_task
-
         preds = ["A", "B", "A", "B"]
         golds = ["A", "B", "B", "A"]
         m = compute_metrics_for_task("macro_f1", preds, golds)
@@ -195,10 +190,9 @@ class TestGoldenBootstrap:
 
     def test_ci_narrows_with_more_data(self):
         """CI should be narrower with more data."""
-        import numpy as np
-
         from src.eval.bootstrap_ci import bootstrap_ci
         from src.eval.metrics import compute_metrics_for_task
+        import numpy as np
 
         np.random.seed(42)
 

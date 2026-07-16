@@ -1,32 +1,34 @@
-#!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Run Full Evaluation Suite                                          ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+#!/bin/bash
 set -euo pipefail
 
+# Run evaluation on all trained models
+echo "=== Full Evaluation ==="
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a; source "$PROJECT_ROOT/.env"; set +a
-fi
+# Evaluate all models in config
+python3 -m src.eval.benchmark_runner --config configs/eval/benchmarks.yaml
 
-echo "═══ Full Evaluation Suite ═══"
-echo "Tasks: ENEM, BluEx, OAB, ASSIN2-RTE/STS, HateBR, TweetSentBR,"
-echo "       COPA-PT, BRoverbs, MRPC-PT, RTE-PT, DoNotAnswer-PT, TugueSICE-PT"
-echo "Modes: think_off + think_on"
+# Generate reports
+python3 -c "
+from src.eval.report_builder import ReportBuilder, build_findings_for_paper
+import json
+from pathlib import Path
 
-# Run benchmark suite
-python -m src.eval.benchmark_runner \
-    --config configs/eval.yml \
-    "$@"
+results_path = Path('reports/eval_results.json')
+if results_path.exists():
+    with open(results_path) as f:
+        results = json.load(f)
+    builder = ReportBuilder(results, output_dir='reports')
+    builder.build_all()
+    build_findings_for_paper('reports')
+    print('Reports generated in reports/')
+else:
+    print('No results found. Run evaluation first.')
+"
 
-# Generate Markdown report
 echo ""
-echo "═══ Generating Report ═══"
-python -m src.eval.report_builder \
-    --config configs/eval.yml \
-    --results_dir reports/eval_results \
-    --output reports/benchmark_report.md
-
-echo "✓ Evaluation complete — see reports/benchmark_report.md"
+echo "=== Evaluation complete ==="
+echo "Reports saved to reports/"

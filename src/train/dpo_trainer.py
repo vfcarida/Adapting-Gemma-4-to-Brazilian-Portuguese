@@ -27,9 +27,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from datasets import Dataset, load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import DPOConfig, DPOTrainer
+from datasets import load_dataset, Dataset
 
 from src.data.instruction_data_builder import format_gemma4_chat
 from src.train.callbacks import LocalMetricsCallback
@@ -143,18 +143,12 @@ class DPOTrainerWrapper:
 
         # Use SFT checkpoint as base for DPO (pipeline: CPT → SFT → DPO)
         base_checkpoint = self.config.get("base_checkpoint")
-        model_id = (
-            base_checkpoint
-            if base_checkpoint and Path(base_checkpoint).exists()
-            else model_cfg["model"]["base_id"]
-        )
+        model_id = base_checkpoint if base_checkpoint and Path(base_checkpoint).exists() else model_cfg["model"]["base_id"]
 
         tokenizer = load_tokenizer(model_id)
         use_lora = self.train_cfg.get("use_lora", True)
 
-        model = load_model_for_training(
-            model_id, use_lora=use_lora, quantize=use_lora, model_config=model_cfg
-        )
+        model = load_model_for_training(model_id, use_lora=use_lora, quantize=use_lora, model_config=model_cfg)
 
         # Apply LoRA (smaller rank than SFT since DPO is a refinement stage)
         if use_lora:
@@ -165,9 +159,7 @@ class DPOTrainerWrapper:
                 lora_alpha=lora_cfg.get("lora_alpha", 32),
                 lora_dropout=lora_cfg.get("lora_dropout", 0.05),
                 # Only attention layers for DPO (lighter than SFT)
-                target_modules=lora_cfg.get(
-                    "target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]
-                ),
+                target_modules=lora_cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
                 task_type="CAUSAL_LM",
             )
             model = get_peft_model(model, peft_config)
@@ -238,7 +230,6 @@ class DPOTrainerWrapper:
 def main():
     """CLI entry point for DPO training."""
     import argparse
-
     parser = argparse.ArgumentParser(description="Run DPO Training")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()

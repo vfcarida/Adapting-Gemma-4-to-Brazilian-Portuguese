@@ -1,0 +1,42 @@
+# Outputs and data (mounted at runtime)
+outputs/
+data/
+reports/
+ablations/
+model/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitattributes
+
+# Environment
+.env
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.h5

@@ -1,0 +1,45 @@
+services:
+  train:
+    build: .
+    image: gemma4-pt-br:latest
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./configs:/workspace/configs
+      - ./src:/workspace/src
+      - ./outputs:/workspace/outputs
+      - ./reports:/workspace/reports
+      - ./data:/workspace/data
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      - WANDB_PROJECT=gemma4-pt-br
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    entrypoint: ["gemma4pt"]
+    command: ["preflight"]
+
+  eval:
+    extends:
+      service: train
+    command: ["eval", "--config", "configs/eval/benchmarks.yaml"]
+
+  cpt-pilot:
+    extends:
+      service: train
+    command: ["train-cpt", "configs/train/cpt_pilot.yaml"]
+
+  smoke:
+    extends:
+      service: train
+    command: ["smoke"]
+    deploy:
+      resources:
+        reservations:
+          devices: []

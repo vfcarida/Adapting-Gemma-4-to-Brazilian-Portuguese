@@ -1,6 +1,7 @@
 """Tests for checkpoint management utilities."""
 
 import json
+import pytest
 import sys
 import tempfile
 from pathlib import Path
@@ -9,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.checkpointing import (
     find_latest_checkpoint,
-    load_training_state,
     save_training_state,
+    load_training_state,
 )
 
 

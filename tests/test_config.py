@@ -1,13 +1,12 @@
 """Tests for config loading utilities."""
 
+import pytest
 import sys
 from pathlib import Path
 
-import pytest
-
 # Import directly without going through __init__ to avoid torch dependency
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils.config_utils import flatten_config, load_config, merge_configs
+from src.utils.config_utils import load_config, merge_configs, flatten_config
 
 
 class TestLoadConfig:

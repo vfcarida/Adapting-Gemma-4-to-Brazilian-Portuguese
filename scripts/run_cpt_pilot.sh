@@ -1,21 +1,15 @@
-#!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Run CPT Pilot — Gemma-4-E4B                                       ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+#!/bin/bash
 set -euo pipefail
 
+# Run CPT pilot (LoRA, small scale) to validate pipeline
+echo "=== CPT Pilot (LoRA) ==="
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a; source "$PROJECT_ROOT/.env"; set +a
-fi
+python3 -m src.train.cpt_trainer --config configs/train/cpt_pilot.yaml
 
-echo "═══ Continued Pretraining (Pilot) — Gemma-4-E4B ═══"
-
-# Single-GPU training
-python -m src.train.cpt_trainer \
-    --config configs/cpt_pilot.yml \
-    "$@"
-
-echo "✓ CPT pilot complete — checkpoint at output/cpt_pilot_e4b/final/"
+echo ""
+echo "=== CPT Pilot complete ==="
+echo "Checkpoint saved to outputs/cpt_pilot/final"

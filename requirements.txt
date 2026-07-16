@@ -1,41 +1,55 @@
-# ── Core ML ──────────────────────────────────────────────────
-torch>=2.4.0
-transformers>=4.51.0
-accelerate>=1.6.0
-peft>=0.15.0
-trl>=0.18.0
-datasets>=3.6.0
-tokenizers>=0.21.0
-safetensors>=0.5.0
+# =============================================================================
+# Requirements — Gemma 4 Portuguese Adaptation
+# =============================================================================
+# This file mirrors pyproject.toml dependencies for environments where
+# pip install -e . is not practical (e.g., Docker, CI without editable install).
+# Keep in sync with pyproject.toml [project.dependencies] and optional-deps.
+# =============================================================================
 
-# ── Training infra ───────────────────────────────────────────
-deepspeed>=0.16.0
-bitsandbytes>=0.45.0
-wandb>=0.19.0
-tensorboard>=2.18.0
+# ── Core ML ──────────────────────────────────────────────────
+torch>=2.2.0
+transformers>=4.45.0
+datasets>=3.0.0
+accelerate>=1.0.0
+peft>=0.13.0
+trl>=0.12.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
 
 # ── Data quality ─────────────────────────────────────────────
 datasketch>=1.6.0
-xxhash>=3.5.0
-nltk>=3.9.0
-ftfy>=6.3.0
-regex>=2024.0.0
+xxhash>=3.4.0
+nltk>=3.8.0
+jsonlines>=4.0.0
 
 # ── Evaluation ───────────────────────────────────────────────
-scipy>=1.14.0
-scikit-learn>=1.5.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
 numpy>=1.26.0
-lm-eval>=0.4.0
-
-# ── Reporting ────────────────────────────────────────────────
-jinja2>=3.1.0
 tabulate>=0.9.0
-tqdm>=4.67.0
 
-# ── Config / env ─────────────────────────────────────────────
-pyyaml>=6.0
+# ── Config / CLI / env ───────────────────────────────────────
+pyyaml>=6.0.1
 python-dotenv>=1.0.0
+rich>=13.7.0
+typer>=0.12.0
+tqdm>=4.66.0
 
-# ── Dev ──────────────────────────────────────────────────────
-ruff>=0.8.0
-pytest>=8.0
+# ── Dev (also in pyproject.toml [dev]) ───────────────────────
+pytest>=8.0.0
+ruff>=0.5.0
+
+# ── GPU (install separately: pip install -r requirements-gpu.txt) ──
+# See pyproject.toml [project.optional-dependencies.gpu]
+# bitsandbytes>=0.44.0
+# deepspeed>=0.14.0
+# flash-attn>=2.5.0
+
+# ── Eval engine (install separately: pip install -r requirements-eval.txt) ──
+# See pyproject.toml [project.optional-dependencies.eval]
+# vllm>=0.6.0
+# bert-score>=0.3.13
+
+# ── Monitoring (install separately or use pip install -e ".[monitoring]") ──
+# wandb>=0.18.0
+# tensorboard>=2.16.0

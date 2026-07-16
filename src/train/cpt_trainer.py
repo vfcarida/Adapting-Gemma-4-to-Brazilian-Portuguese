@@ -1,19 +1,36 @@
-"""Continued Pretraining trainer for causal language modeling."""
+"""Continued Pretraining trainer for causal language modeling.
 
+Supports:
+- Single GPU (LoRA/QLoRA)
+- Multi-GPU via DeepSpeed ZeRO-2/3 (full fine-tune)
+- Spot instance preemption recovery (auto-resume from latest checkpoint)
+- GCS checkpoint sync via callback
+"""
+
+import signal
 import time
 from pathlib import Path
 from typing import Any
 
+import torch
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     DataCollatorForLanguageModeling,
     Trainer,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
     TrainingArguments,
 )
 
 from src.data.aurora_loader import AuroraLoader, tokenize_for_cpt
 from src.data.replay_mix_builder import ReplayMixBuilder
-from src.train.callbacks import LocalMetricsCallback, ThroughputCallback
+from src.train.callbacks import (
+    ThroughputCallback,
+    LocalMetricsCallback,
+    WandBCallback,
+    ForgettingMonitorCallback,
+)
 from src.utils.checkpointing import find_latest_checkpoint, save_training_state
 from src.utils.config_utils import load_config
 from src.utils.hf_utils import load_model_for_training, load_tokenizer
@@ -21,6 +38,93 @@ from src.utils.logging_utils import MetricsLogger, get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
+
+
+class PreemptionHandler(TrainerCallback):
+    """Handle Spot/Preemptible VM preemption gracefully.
+
+    GCP sends SIGTERM 30 seconds before terminating a Spot VM.
+    This callback catches the signal, triggers an immediate checkpoint save,
+    and stops training cleanly so it can be resumed later.
+    """
+
+    def __init__(self):
+        self._preempted = False
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+    def _handle_sigterm(self, signum, frame):
+        logger.warning("SIGTERM received — Spot preemption detected. Saving checkpoint...")
+        self._preempted = True
+
+    def on_step_end(self, args: TrainingArguments, state: TrainerState,
+                    control: TrainerControl, **kwargs):
+        if self._preempted:
+            control.should_save = True
+            control.should_training_stop = True
+            logger.warning(f"Preemption: saving at step {state.global_step} and stopping.")
+        return control
+
+
+class GCSCheckpointSync(TrainerCallback):
+    """Sync checkpoints to GCS after each save for fault tolerance.
+
+    Only activates if GCS_BUCKET environment variable is set.
+    Runs gsutil rsync in the background to avoid blocking training,
+    but verifies previous sync completed before starting a new one.
+
+    Features:
+    - Skips new sync if previous is still running (avoids parallel rsyncs)
+    - Logs sync failures as warnings
+    - Waits for final sync on training end
+    """
+
+    def __init__(self, output_dir: str):
+        import os
+        self.bucket = os.environ.get("GCS_BUCKET")
+        self.output_dir = output_dir
+        self.experiment_name = Path(output_dir).name
+        self._last_process = None
+        self._sync_count = 0
+        self._fail_count = 0
+
+    def on_save(self, args: TrainingArguments, state: TrainerState,
+                control: TrainerControl, **kwargs):
+        if not self.bucket:
+            return
+        import subprocess
+
+        # Check if previous sync is still running
+        if self._last_process is not None:
+            poll = self._last_process.poll()
+            if poll is None:
+                logger.warning("GCS sync: previous sync still running, skipping this save")
+                return
+            elif poll != 0:
+                self._fail_count += 1
+                logger.warning(f"GCS sync: previous sync failed (exit={poll})")
+
+        if not Path(self.output_dir).exists():
+            logger.warning(f"GCS sync: output dir does not exist: {self.output_dir}")
+            return
+
+        gcs_path = f"{self.bucket}/outputs/{self.experiment_name}/"
+        cmd = f"gsutil -m rsync -r {self.output_dir}/ {gcs_path}"
+        logger.info(f"Syncing checkpoint to {gcs_path} (sync #{self._sync_count + 1})")
+        self._last_process = subprocess.Popen(
+            cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        )
+        self._sync_count += 1
+
+    def on_train_end(self, args: TrainingArguments, state: TrainerState,
+                     control: TrainerControl, **kwargs):
+        """Wait for final sync to complete before training ends."""
+        if self._last_process is not None and self._last_process.poll() is None:
+            logger.info("GCS sync: waiting for final sync to complete...")
+            self._last_process.wait(timeout=300)
+        if self._sync_count > 0:
+            logger.info(
+                f"GCS sync summary: {self._sync_count} syncs, {self._fail_count} failures"
+            )
 
 
 class CPTTrainer:
@@ -39,11 +143,11 @@ class CPTTrainer:
         start_time = time.time()
 
         # Load model config
-        model_cfg = (
-            config
-            if isinstance((config := self.config.get("model_config")), dict)
-            else load_config(config)
-        )
+        model_cfg = self.config.get("model_config")
+        if model_cfg is None:
+            raise ValueError("model_config is required in training config")
+        if isinstance(model_cfg, str):
+            model_cfg = load_config(model_cfg)
 
         # Load data config
         data_cfg = self.config.get("data_config")
@@ -72,18 +176,10 @@ class CPTTrainer:
                 r=lora_cfg.get("r", 64),
                 lora_alpha=lora_cfg.get("lora_alpha", 128),
                 lora_dropout=lora_cfg.get("lora_dropout", 0.05),
-                target_modules=lora_cfg.get(
-                    "target_modules",
-                    [
-                        "q_proj",
-                        "k_proj",
-                        "v_proj",
-                        "o_proj",
-                        "gate_proj",
-                        "up_proj",
-                        "down_proj",
-                    ],
-                ),
+                target_modules=lora_cfg.get("target_modules", [
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj",
+                ]),
                 task_type=lora_cfg.get("task_type", "CAUSAL_LM"),
                 bias=lora_cfg.get("bias", "none"),
             )
@@ -105,14 +201,27 @@ class CPTTrainer:
 
         # Tokenize and pack
         max_seq_length = model_cfg["model"].get("max_seq_length", 8192)
-        pack = data_cfg.get("packing", {}).get("enabled", True)
+        packing_cfg = data_cfg.get("packing", {})
+        pack = packing_cfg.get("enabled", True)
+        curriculum_sort = data_cfg.get("curriculum_sort", False)
 
         train_tokenized = tokenize_for_cpt(
-            train_dataset, tokenizer, max_seq_length=max_seq_length, pack=pack
+            train_dataset, tokenizer, max_seq_length=max_seq_length,
+            pack=pack, curriculum_sort=curriculum_sort,
         )
         val_tokenized = tokenize_for_cpt(
             splits["validation"], tokenizer, max_seq_length=max_seq_length, pack=pack
         )
+
+        # Resolve DeepSpeed config path (if specified)
+        deepspeed_config = self.train_cfg.get("deepspeed") or self.config.get("deepspeed")
+        if deepspeed_config and isinstance(deepspeed_config, str):
+            ds_path = Path(deepspeed_config)
+            if not ds_path.is_absolute():
+                ds_path = Path.cwd() / ds_path
+            deepspeed_config = str(ds_path) if ds_path.exists() else None
+            if deepspeed_config:
+                logger.info(f"DeepSpeed enabled: {deepspeed_config}")
 
         # Training arguments
         training_args = TrainingArguments(
@@ -150,24 +259,54 @@ class CPTTrainer:
             seed=self.seed,
             data_seed=self.seed,
             run_name=self.config.get("experiment", {}).get("name", "cpt"),
+            # DeepSpeed integration
+            deepspeed=deepspeed_config,
         )
 
-        # Check for resume
+        # Check for resume (auto-resume on Spot preemption recovery)
         resume_from = self.config.get("checkpointing", {}).get("resume_from_checkpoint")
         if resume_from is None:
             resume_from = find_latest_checkpoint(self.output_dir)
+        if resume_from:
+            logger.info(f"Resuming from checkpoint: {resume_from}")
 
         # Callbacks
         metrics_logger = MetricsLogger(
             self.config.get("logging", {}).get("log_file", self.output_dir / "train_log.jsonl")
         )
+
+        # Forgetting monitor: evaluate EN perplexity every N steps
+        forgetting_cfg = self.config.get("forgetting_monitor", {})
+        forgetting_monitor = ForgettingMonitorCallback(
+            eval_interval_steps=forgetting_cfg.get(
+                "eval_interval_steps",
+                self.config.get("evaluation", {}).get("eval_steps", 500),
+            ),
+            max_eval_samples=forgetting_cfg.get("max_eval_samples", 100),
+            metrics_logger=metrics_logger,
+        )
+
         callbacks = [
             ThroughputCallback(metrics_logger),
             LocalMetricsCallback(metrics_logger),
+            forgetting_monitor,
+            PreemptionHandler(),
+            GCSCheckpointSync(str(self.output_dir)),
+            WandBCallback(
+                project="gemma4-pt-br-adaptation",
+                config=self.config,
+                tags=[
+                    self.config.get("experiment", {}).get("trilha", "unknown"),
+                    "cpt",
+                    "lora" if use_lora else "full",
+                ],
+            ),
         ]
 
         # Data collator
-        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, mlm=False
+        )
 
         # Initialize trainer
         trainer = Trainer(
@@ -218,6 +357,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run Continued Pretraining")
     parser.add_argument("--config", type=str, required=True, help="Path to training config YAML")
     parser.add_argument("--override", nargs="*", help="Override config values (key=value)")
+    parser.add_argument("--seed", type=int, default=None, help="Override seed for multi-seed runs")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -225,7 +365,6 @@ def main():
     # Apply overrides
     if args.override:
         from src.utils.config_utils import merge_configs
-
         overrides = {}
         for o in args.override:
             key, value = o.split("=", 1)
@@ -235,6 +374,14 @@ def main():
                 d = d.setdefault(k, {})
             d[keys[-1]] = value
         config = merge_configs(config, overrides)
+
+    # Seed override (for multi-seed experiments)
+    if args.seed is not None:
+        config.setdefault("experiment", {})["seed"] = args.seed
+        # Append seed to output dir to avoid overwriting
+        output_dir = config.get("output", {}).get("output_dir", "outputs/cpt")
+        config["output"]["output_dir"] = f"{output_dir}_seed{args.seed}"
+        logger.info(f"Multi-seed mode: seed={args.seed}, output={config['output']['output_dir']}")
 
     trainer = CPTTrainer(config)
     trainer.run()

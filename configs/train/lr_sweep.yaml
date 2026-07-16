@@ -1,0 +1,76 @@
+# =============================================================================
+# LR Sweep — Quick validation of learning rate before full run
+# =============================================================================
+# Run 3 LR values for 500 steps each on a small subset to find optimal LR.
+# Best practice: CPT peak LR should be 30-50% of original pre-training LR.
+#
+# For Gemma 4 (pre-trained with LR ~3e-4), sweep range: 5e-5 to 3e-4
+# Usage: bash scripts/run_lr_sweep.sh
+
+experiment:
+  name: "lr_sweep_e4b"
+  description: "Quick LR sweep to find optimal learning rate for CPT"
+  seed: 42
+  trilha: "piloto"
+
+model_config: "configs/model/gemma4_e4b.yaml"
+data_config: "configs/data/aurora_pt.yaml"
+
+data_mixture: "pt_en_15"
+
+training:
+  method: "cpt"
+  use_lora: true
+  num_train_epochs: 1
+  max_steps: 500  # Short run for each LR
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 16
+  # LR is overridden per sweep point
+  learning_rate: 1.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  task_type: "CAUSAL_LM"
+  bias: "none"
+
+# Sweep configuration
+lr_sweep:
+  values: [5.0e-5, 1.0e-4, 2.0e-4, 3.0e-4]
+  metric: "eval_loss"  # Select LR with lowest final eval_loss
+  steps_per_point: 500
+
+checkpointing:
+  save_steps: 250
+  save_total_limit: 2
+  resume_from_checkpoint: null
+
+logging:
+  log_level: "info"
+  logging_steps: 10
+  report_to: ["tensorboard", "wandb"]
+  log_file: "outputs/lr_sweep/train_log.jsonl"
+
+evaluation:
+  eval_steps: 100
+  eval_strategy: "steps"
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+output:
+  output_dir: "outputs/lr_sweep"
+  overwrite_output_dir: true

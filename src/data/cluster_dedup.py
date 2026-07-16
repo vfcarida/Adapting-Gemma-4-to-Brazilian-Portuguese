@@ -9,97 +9,14 @@ vazamento de near-duplicates entre treino e validação.
 import hashlib
 import random
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set
-import struct
-
-def _find_lsh_params(threshold: float, num_perm: int):
-    best_b, best_r = 1, num_perm
-    min_err = 1.0
-    for b in range(1, num_perm + 1):
-        r = num_perm // b
-        if r == 0:
-            continue
-        t = (1.0 / b) ** (1.0 / r)
-        err = abs(t - threshold)
-        if err < min_err:
-            min_err = err
-            best_b = b
-            best_r = r
-    return best_b, best_r
-
-class FallbackMinHash:
-    _prime = (1 << 61) - 1
-    _max_hash = (1 << 32) - 1
-
-    def __init__(self, num_perm=128, hashvalues=None, seed=1):
-        self.num_perm = num_perm
-        if hashvalues is not None:
-            self.hashvalues = list(hashvalues)
-        else:
-            self.hashvalues = [self._max_hash] * num_perm
-
-        generator = random.Random(seed)
-        self._a = [generator.randint(1, self._prime - 1) for _ in range(num_perm)]
-        self._b = [generator.randint(0, self._prime - 1) for _ in range(num_perm)]
-
-    def update(self, b: bytes):
-        h = int(hashlib.md5(b).hexdigest()[:8], 16)
-        for i in range(self.num_perm):
-            ph = (self._a[i] * h + self._b[i]) % self._prime
-            ph = ph & self._max_hash
-            if ph < self.hashvalues[i]:
-                self.hashvalues[i] = ph
-
-    def jaccard(self, other: "FallbackMinHash") -> float:
-        if self.num_perm != other.num_perm:
-            raise ValueError("Number of permutations must match")
-        matches = sum(1 for x, y in zip(self.hashvalues, other.hashvalues) if x == y)
-        return matches / self.num_perm
-
-class FallbackMinHashLSH:
-    def __init__(self, threshold=0.5, num_perm=128):
-        self.threshold = threshold
-        self.num_perm = num_perm
-        self.b, self.r = _find_lsh_params(threshold, num_perm)
-        self.hashtables = [defaultdict(set) for _ in range(self.b)]
-        self.keys = {}
-
-    def insert(self, key: str, minhash: FallbackMinHash):
-        if len(minhash.hashvalues) != self.num_perm:
-            raise ValueError("MinHash number of permutations mismatch")
-        if key in self.keys:
-            raise ValueError(f"Key {key} already exists in LSH")
-
-        band_hashes = []
-        for i in range(self.b):
-            band = tuple(minhash.hashvalues[i * self.r : (i + 1) * self.r])
-            band_hash = hashlib.sha256(struct.pack(f"{len(band)}I", *band)).hexdigest()
-            self.hashtables[i][band_hash].add(key)
-            band_hashes.append(band_hash)
-
-        self.keys[key] = band_hashes
-
-    def query(self, minhash: FallbackMinHash) -> list[str]:
-        if len(minhash.hashvalues) != self.num_perm:
-            raise ValueError("MinHash number of permutations mismatch")
-
-        candidates = set()
-        for i in range(self.b):
-            band = tuple(minhash.hashvalues[i * self.r : (i + 1) * self.r])
-            band_hash = hashlib.sha256(struct.pack(f"{len(band)}I", *band)).hexdigest()
-            if band_hash in self.hashtables[i]:
-                candidates.update(self.hashtables[i][band_hash])
-        return list(candidates)
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Tentativa de importar datasketch para MinHash LSH
 try:
     from datasketch import MinHash, MinHashLSH
-
     HAS_DATASKETCH = True
 except ImportError:
-    MinHash = FallbackMinHash
-    MinHashLSH = FallbackMinHashLSH
-    HAS_DATASKETCH = True
+    HAS_DATASKETCH = False
 
 
 class ClusterDedup:
@@ -132,7 +49,7 @@ class ClusterDedup:
         text = text.lower().strip()
         if len(text) < k:
             return {text}
-        return {text[i : i + k] for i in range(len(text) - k + 1)}
+        return {text[i:i + k] for i in range(len(text) - k + 1)}
 
     def _build_minhash(self, shingles: Set[str], num_perm: int = 128) -> "MinHash":
         """
@@ -195,12 +112,16 @@ class ClusterDedup:
 
         # Conta duplicatas (documentos em clusters com mais de 1 membro)
         self._n_duplicates_removed = sum(
-            len(members) - 1 for members in self._clusters.values() if len(members) > 1
+            len(members) - 1
+            for members in self._clusters.values()
+            if len(members) > 1
         )
 
         return self._cluster_map.copy()
 
-    def _build_clusters_minhash(self, texts: List[str], threshold: float, num_perm: int) -> None:
+    def _build_clusters_minhash(
+        self, texts: List[str], threshold: float, num_perm: int
+    ) -> None:
         """
         Constrói clusters usando MinHash LSH.
 
@@ -328,7 +249,9 @@ class ClusterDedup:
             cluster_map = self._cluster_map
 
         if not cluster_map:
-            raise ValueError("Nenhum cluster encontrado. Execute build_clusters() primeiro.")
+            raise ValueError(
+                "Nenhum cluster encontrado. Execute build_clusters() primeiro."
+            )
 
         # Reconstrói mapeamento cluster_id → [doc_indices]
         clusters: Dict[int, List[int]] = defaultdict(list)
@@ -392,7 +315,9 @@ class ClusterDedup:
         n_original = self._original_size
         n_unique = n_original - self._n_duplicates_removed
 
-        dedup_ratio = self._n_duplicates_removed / n_original if n_original > 0 else 0.0
+        dedup_ratio = (
+            self._n_duplicates_removed / n_original if n_original > 0 else 0.0
+        )
 
         method = "minhash_lsh" if HAS_DATASKETCH else "exact_hash"
 

@@ -17,6 +17,7 @@ Execução:
     gemma4pt smoke
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -51,7 +52,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 1. Config loading and merging
     # =========================================================================
     def test_config_loading():
-        from src.utils.config_utils import flatten_config, load_config, merge_configs
+        from src.utils.config_utils import load_config, merge_configs, flatten_config
 
         # Load real config
         cfg = load_config("configs/eval/benchmarks.yaml")
@@ -75,9 +76,8 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 2. Seed and reproducibility
     # =========================================================================
     def test_seed():
-        import numpy as np
-
         from src.utils.seed import set_seed
+        import numpy as np
 
         set_seed(42)
         a = np.random.rand(10)
@@ -87,7 +87,6 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         try:
             import torch
-
             set_seed(42)
             ta = torch.randn(10)
             set_seed(42)
@@ -102,7 +101,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 3. Prompt builders
     # =========================================================================
     def test_prompt_builders():
-        from src.data.prompt_builders import BaselinePromptBuilder, Gemma4PromptBuilder
+        from src.data.prompt_builders import Gemma4PromptBuilder, BaselinePromptBuilder
 
         # Test with None tokenizer (fallback mode)
         class FakeTokenizer:
@@ -160,11 +159,8 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_prompt_templates():
         from src.eval.prompt_templates import (
-            TASK_FORMATTERS,
-            TASK_INSTRUCTIONS,
-            extract_thought,
-            get_prompt_template,
-            strip_thought,
+            get_prompt_template, strip_thought, extract_thought, PromptBuilder,
+            TASK_INSTRUCTIONS, TASK_FORMATTERS,
         )
 
         # All tasks have instructions and formatters
@@ -244,13 +240,11 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 7. Stats tests
     # =========================================================================
     def test_stats():
-        import numpy as np
-
         from src.eval.stats_tests import (
-            compute_effect_size,
+            paired_permutation_test, compute_effect_size,
             multiple_comparison_correction,
-            paired_permutation_test,
         )
+        import numpy as np
 
         scores_a = np.array([0.8, 0.9, 0.7, 0.85, 0.75])
         scores_b = np.array([0.6, 0.7, 0.5, 0.65, 0.55])
@@ -278,9 +272,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_checkpointing():
         from src.utils.checkpointing import (
-            find_latest_checkpoint,
-            load_training_state,
-            save_training_state,
+            save_training_state, load_training_state, find_latest_checkpoint,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -310,10 +302,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_contamination():
         from src.data.contamination_checks import (
-            ContaminationChecker,
-            compute_hash,
-            ngrams,
-            normalize_text,
+            normalize_text, compute_hash, ngrams, ContaminationChecker,
         )
 
         # Normalization
@@ -349,36 +338,34 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Synthetic results
-            results = [
-                {
-                    "model_name": "test_model",
-                    "model_id": "test/model",
-                    "benchmarks": {
-                        "think_off": {
-                            "enem": {
-                                "task": "enem",
-                                "group": "brasil_geral",
-                                "metric_name": "accuracy",
-                                "metrics": {"accuracy": 0.75},
-                                "num_examples": 100,
-                                "inference_time_sec": 10.0,
-                                "think_mode": "off",
-                                "raw_predictions": ["A", "B"],
-                            },
-                            "assin2_rte": {
-                                "task": "assin2_rte",
-                                "group": "semantica",
-                                "metric_name": "accuracy",
-                                "metrics": {"accuracy": 0.82},
-                                "num_examples": 50,
-                                "inference_time_sec": 5.0,
-                                "think_mode": "off",
-                                "raw_predictions": ["entailment"],
-                            },
-                        }
-                    },
-                }
-            ]
+            results = [{
+                "model_name": "test_model",
+                "model_id": "test/model",
+                "benchmarks": {
+                    "think_off": {
+                        "enem": {
+                            "task": "enem",
+                            "group": "brasil_geral",
+                            "metric_name": "accuracy",
+                            "metrics": {"accuracy": 0.75},
+                            "num_examples": 100,
+                            "inference_time_sec": 10.0,
+                            "think_mode": "off",
+                            "raw_predictions": ["A", "B"],
+                        },
+                        "assin2_rte": {
+                            "task": "assin2_rte",
+                            "group": "semantica",
+                            "metric_name": "accuracy",
+                            "metrics": {"accuracy": 0.82},
+                            "num_examples": 50,
+                            "inference_time_sec": 5.0,
+                            "think_mode": "off",
+                            "raw_predictions": ["entailment"],
+                        },
+                    }
+                },
+            }]
 
             builder = ReportBuilder(results, output_dir=tmpdir)
             builder.build_all()
@@ -443,7 +430,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 13. Preflight
     # =========================================================================
     def test_preflight():
-        from src.preflight import PreflightResult, run_preflight
+        from src.preflight import run_preflight, PreflightResult
 
         result = run_preflight(
             check_gpu=False,

@@ -8,6 +8,7 @@ during training to track:
 - Metrics: loss, learning rate, gradients (LocalMetricsCallback)
 - Memory: GPU VRAM usage over time (GPUMemoryCallback)
 - Convergence: early stopping on loss plateau (EarlyStoppingOnPlateau)
+- W&B: remote dashboard logging via Weights & Biases (WandBCallback)
 
 All numeric metrics are logged to a local JSONL file via MetricsLogger,
 providing a W&B-free alternative for experiment tracking. The JSONL format
@@ -24,10 +25,12 @@ Usage:
     )
 """
 
+import os
 import time
+from typing import Any
 
 import torch
-from transformers import TrainerCallback
+from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
 from src.utils.logging_utils import MetricsLogger, get_logger
 
@@ -114,10 +117,7 @@ class LocalMetricsCallback(TrainerCallback):
         """Persist evaluation metrics with an 'eval' event marker."""
         if metrics:
             self.metrics_logger.log(
-                {
-                    "event": "eval",
-                    **{k: v for k, v in metrics.items() if isinstance(v, (int, float))},
-                },
+                {"event": "eval", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))}},
                 step=state.global_step,
             )
 
@@ -203,3 +203,227 @@ class GPUMemoryCallback(TrainerCallback):
                 },
                 step=state.global_step,
             )
+
+
+class ForgettingMonitorCallback(TrainerCallback):
+    """Monitor catastrophic forgetting by tracking English perplexity during training.
+
+    Periodically computes perplexity on a small English validation set (held constant).
+    This is the most sensitive early-warning signal for forgetting — if English perplexity
+    starts rising, the replay ratio may need adjustment.
+
+    The monitor evaluates every `eval_interval_steps` and logs:
+    - en_perplexity: Perplexity on English validation set
+    - en_loss: Cross-entropy loss on English validation set
+    - forgetting_delta: Change from initial English perplexity
+
+    Args:
+        en_eval_texts: List of English text samples for perplexity computation.
+        eval_interval_steps: How often to evaluate (default: every 500 steps).
+        max_eval_samples: Maximum samples to use per evaluation (for speed).
+        metrics_logger: MetricsLogger for persisting results.
+    """
+
+    def __init__(
+        self,
+        en_eval_texts: list[str] | None = None,
+        eval_interval_steps: int = 500,
+        max_eval_samples: int = 100,
+        metrics_logger: MetricsLogger | None = None,
+    ):
+        self.en_eval_texts = en_eval_texts
+        self.eval_interval_steps = eval_interval_steps
+        self.max_eval_samples = max_eval_samples
+        self.metrics_logger = metrics_logger
+        self.initial_perplexity: float | None = None
+        self._tokenizer = None
+        self._eval_encodings = None
+
+    def on_train_begin(self, args, state, control, model=None, processing_class=None, **kwargs):
+        """Prepare English evaluation data at training start."""
+        if not self.en_eval_texts:
+            self._load_default_en_data()
+
+        if not self.en_eval_texts:
+            logger.warning("ForgettingMonitor: No English eval data available, disabling")
+            return
+
+        # Get tokenizer from trainer
+        self._tokenizer = processing_class
+        if self._tokenizer is None:
+            logger.warning("ForgettingMonitor: No tokenizer available, disabling")
+            return
+
+        # Pre-tokenize English eval set
+        texts = self.en_eval_texts[:self.max_eval_samples]
+        self._eval_encodings = self._tokenizer(
+            texts, truncation=True, max_length=512, padding=True, return_tensors="pt"
+        )
+
+        # Compute initial perplexity (baseline before any training)
+        if model is not None:
+            self.initial_perplexity = self._compute_perplexity(model)
+            logger.info(f"ForgettingMonitor: Initial EN perplexity = {self.initial_perplexity:.2f}")
+            if self.metrics_logger:
+                self.metrics_logger.log({
+                    "en_perplexity": self.initial_perplexity,
+                    "en_forgetting_delta": 0.0,
+                    "event": "forgetting_baseline",
+                }, step=0)
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        """Evaluate English perplexity at regular intervals."""
+        if self._eval_encodings is None or model is None:
+            return
+
+        if state.global_step % self.eval_interval_steps != 0:
+            return
+        if state.global_step == 0:
+            return
+
+        ppl = self._compute_perplexity(model)
+        delta = ppl - self.initial_perplexity if self.initial_perplexity else 0.0
+
+        logger.info(
+            f"ForgettingMonitor [step {state.global_step}]: "
+            f"EN ppl={ppl:.2f} (Δ={delta:+.2f} from baseline)"
+        )
+
+        if self.metrics_logger:
+            self.metrics_logger.log({
+                "en_perplexity": ppl,
+                "en_forgetting_delta": delta,
+                "event": "forgetting_check",
+            }, step=state.global_step)
+
+        # Warn if forgetting is significant (>20% increase)
+        if self.initial_perplexity and ppl > self.initial_perplexity * 1.2:
+            logger.warning(
+                f"FORGETTING ALERT: EN perplexity increased by "
+                f"{(ppl/self.initial_perplexity - 1)*100:.1f}% — consider increasing replay ratio"
+            )
+
+    def _compute_perplexity(self, model) -> float:
+        """Compute perplexity on the English eval set."""
+        import math
+        model.eval()
+        device = next(model.parameters()).device
+
+        input_ids = self._eval_encodings["input_ids"].to(device)
+        attention_mask = self._eval_encodings["attention_mask"].to(device)
+
+        with torch.no_grad():
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+            loss = outputs.loss.item()
+
+        model.train()
+        return math.exp(min(loss, 100))  # Cap to avoid overflow
+
+    def _load_default_en_data(self):
+        """Load a small English validation set from FineWeb-Edu."""
+        try:
+            from datasets import load_dataset
+            logger.info("ForgettingMonitor: Loading English eval data from FineWeb-Edu...")
+            ds = load_dataset(
+                "HuggingFaceFW/fineweb-edu", "sample-10BT",
+                split="train", streaming=True
+            )
+            samples = []
+            for i, ex in enumerate(ds):
+                if i >= self.max_eval_samples:
+                    break
+                text = ex.get("text", "")
+                if len(text) > 100:
+                    samples.append(text[:512])  # Truncate for efficiency
+            self.en_eval_texts = samples
+            logger.info(f"ForgettingMonitor: Loaded {len(samples)} English samples")
+        except Exception as e:
+            logger.warning(f"ForgettingMonitor: Could not load English data: {e}")
+            self.en_eval_texts = []
+
+
+class WandBCallback(TrainerCallback):
+    """Weights & Biases integration for remote experiment tracking.
+
+    Initializes a W&B run on training start and logs all metrics.
+    Only activates if WANDB_API_KEY is set in environment or wandb
+    is already logged in. Falls back gracefully if wandb is not installed.
+
+    Features:
+    - Logs all training metrics (loss, lr, grad_norm, throughput)
+    - Logs evaluation metrics with "eval/" prefix
+    - Saves config as W&B run config for filtering/grouping
+    - Logs system metrics (GPU utilization, memory) automatically
+
+    Args:
+        project: W&B project name.
+        config: Full experiment config dict (saved as run config).
+        tags: Optional list of tags for filtering runs.
+    """
+
+    def __init__(
+        self,
+        project: str = "gemma4-pt-br-adaptation",
+        config: dict | None = None,
+        tags: list[str] | None = None,
+    ):
+        self.project = project
+        self.config = config or {}
+        self.tags = tags or []
+        self._wandb = None
+        self._run = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Initialize W&B run at training start."""
+        try:
+            import wandb
+            self._wandb = wandb
+        except ImportError:
+            logger.warning("wandb not installed — WandBCallback disabled. pip install wandb")
+            return
+
+        # Only init if API key is available
+        if not (os.environ.get("WANDB_API_KEY") or wandb.api.api_key):
+            logger.warning("WANDB_API_KEY not set — WandBCallback disabled")
+            self._wandb = None
+            return
+
+        run_name = self.config.get("experiment", {}).get("name", "train")
+        group = self.config.get("experiment", {}).get("trilha", None)
+
+        self._run = wandb.init(
+            project=self.project,
+            name=run_name,
+            group=group,
+            config=self.config,
+            tags=self.tags,
+            resume="allow",
+        )
+        logger.info(f"W&B run initialized: {self._run.url}")
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Log metrics to W&B."""
+        if not self._wandb or not self._run or not logs:
+            return
+        # Filter to numeric and log with step
+        numeric_logs = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
+        if numeric_logs:
+            self._wandb.log(numeric_logs, step=state.global_step)
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Log evaluation metrics to W&B with eval/ prefix."""
+        if not self._wandb or not self._run or not metrics:
+            return
+        eval_metrics = {
+            f"eval/{k}" if not k.startswith("eval_") else k: v
+            for k, v in metrics.items()
+            if isinstance(v, (int, float))
+        }
+        if eval_metrics:
+            self._wandb.log(eval_metrics, step=state.global_step)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Finish W&B run cleanly."""
+        if self._run:
+            self._run.finish()
+            logger.info("W&B run finished")

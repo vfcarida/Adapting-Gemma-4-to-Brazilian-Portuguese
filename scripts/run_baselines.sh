@@ -1,22 +1,26 @@
-#!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Run Baseline Model Evaluations                                     ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+#!/bin/bash
 set -euo pipefail
 
+# Run evaluation on baseline models (no adaptation)
+echo "=== Baseline Evaluation ==="
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a; source "$PROJECT_ROOT/.env"; set +a
-fi
+MODELS=(
+    "google/gemma-4-E4B-it"
+    "CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it"
+    "maritaca-ai/sabia-7b"
+)
 
-echo "═══ Baseline Evaluation ═══"
-echo "Baselines: ${BASELINE_MODELS:-CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it,maritaca-ai/sabia-7b,Polygl0t/Tucano2-qwen-3.7B-Instruct}"
+for MODEL in "${MODELS[@]}"; do
+    echo ""
+    echo "--- Evaluating: $MODEL ---"
+    python3 -m src.eval.benchmark_runner --config configs/eval/benchmarks.yaml --model "$MODEL" || \
+        echo "WARNING: Failed to evaluate $MODEL"
+done
 
-python -m src.eval.benchmark_runner \
-    --config configs/eval.yml \
-    --override \
-        "models=[$(echo "${BASELINE_MODELS:-CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it,maritaca-ai/sabia-7b,Polygl0t/Tucano2-qwen-3.7B-Instruct}" | tr ',' ' ')]"
-
-echo "✓ Baseline evaluation complete — see reports/eval_results/"
+echo ""
+echo "=== Baseline evaluation complete ==="
+echo "Results saved to reports/"

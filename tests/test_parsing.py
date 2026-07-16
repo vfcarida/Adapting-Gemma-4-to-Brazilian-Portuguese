@@ -1,11 +1,13 @@
 """Tests for prediction parsing in evaluation tasks."""
 
-from src.eval.tasks.assin2_rte import Assin2RTETask
-from src.eval.tasks.copa_pt import CopaPTTask
+import pytest
+from src.eval.tasks.base_task import BaseTask
 from src.eval.tasks.enem import EnemTask
+from src.eval.tasks.assin2_rte import Assin2RTETask
 from src.eval.tasks.hatebr import HateBRTask
-from src.eval.tasks.mrpc_pt import MRPCPTTask
 from src.eval.tasks.tweet_sentbr import TweetSentBRTask
+from src.eval.tasks.copa_pt import CopaPTTask
+from src.eval.tasks.mrpc_pt import MRPCPTTask
 
 
 class TestLetterExtraction:

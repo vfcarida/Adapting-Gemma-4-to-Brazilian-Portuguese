@@ -12,6 +12,11 @@ evaluation:
   use_vllm: true
   cache_dir: "outputs/eval_cache"
 
+  # Logprob scoring: for MCQ tasks, score by comparing log-probabilities
+  # of each answer option (more stable than generate+parse, no format errors)
+  # Only used when use_vllm=false, think_mode=off, and metric=accuracy
+  use_logprob: true
+
   # Modos de pensamento: avalia com e sem cadeia de raciocínio
   think_modes: ["off", "on"]
   # Quando think_on, remove <think>...</think> antes de computar métricas
@@ -93,9 +98,7 @@ benchmarks:
     group: "semantica"
     metric: "boolq_accuracy"
     num_shots: 5
-    hub_id: null
-    # TODO: Identificar hub_id correto para BoolQ traduzido
-    local_path: "data/benchmarks/boolq_pt.jsonl"
+    hub_id: "Se7enB/boolq_pt"
     enabled: true
 
   # =========================================================================
@@ -125,9 +128,7 @@ benchmarks:
     group: "juridico"
     metric: "accuracy"
     num_shots: 0
-    hub_id: null
-    local_path: "data/benchmarks/oab_bench.jsonl"
-    # Modo rubrica quando disponível
+    hub_id: "Se7enB/oab_exams"
     rubric_mode: false
     enabled: true
 
@@ -136,8 +137,7 @@ benchmarks:
     group: "juridico"
     metric: "entity_micro_f1"
     num_shots: 0
-    hub_id: "lener_br"
-    # TODO: Verificar formato exato do dataset no HF Hub
+    hub_id: "HuggingFaceGECLNLP/lener_br"
     enabled: true
 
   legalbench_br:
@@ -145,9 +145,7 @@ benchmarks:
     group: "juridico"
     metric: "accuracy"
     num_shots: 5
-    hub_id: null
-    # TODO: Identificar hub_id ou preparar dataset local
-    local_path: "data/benchmarks/legalbench_br.jsonl"
+    hub_id: "eduagarcia/legalbench_br"
     enabled: true
 
   # =========================================================================
@@ -158,8 +156,7 @@ benchmarks:
     group: "cultura"
     metric: "accuracy"
     num_shots: 0
-    hub_id: null
-    local_path: "data/benchmarks/broverbs.jsonl"
+    hub_id: "Se7enB/broverbs"
     enabled: true
 
   capitu:
@@ -167,9 +164,7 @@ benchmarks:
     group: "cultura"
     metric: "accuracy"
     num_shots: 0
-    hub_id: null
-    # TODO: Identificar fonte do dataset CAPITU
-    local_path: "data/benchmarks/capitu.jsonl"
+    hub_id: "Se7enB/capitu"
     enabled: true
 
   # =========================================================================
@@ -180,9 +175,7 @@ benchmarks:
     group: "raciocinio"
     metric: "accuracy"
     num_shots: 0
-    hub_id: null
-    # TODO: Identificar hub_id para Math-PT
-    local_path: "data/benchmarks/math_pt.jsonl"
+    hub_id: "Se7enB/math_pt"
     enabled: true
 
   # =========================================================================
@@ -193,9 +186,7 @@ benchmarks:
     group: "dominio_publico"
     metric: "macro_f1"
     num_shots: 5
-    hub_id: null
-    # TODO: Identificar fonte do PublicHearingBR
-    local_path: "data/benchmarks/publichearing_br.jsonl"
+    hub_id: "Se7enB/publichearing_br"
     enabled: true
 
   # =========================================================================
@@ -206,8 +197,7 @@ benchmarks:
     group: "seguranca"
     metric: "refusal_rate"
     num_shots: 0
-    hub_id: null
-    local_path: "data/benchmarks/donotanswer_pt.jsonl"
+    hub_id: "Se7enB/donotanswer_pt"
     enabled: true
 
   # =========================================================================
@@ -220,7 +210,7 @@ benchmarks:
     num_shots: 0
     hub_id: "csebuetnlp/xlsum"
     subset: "portuguese"
-    # TODO: Adicionar BERTScore como métrica secundária
+    secondary_metric: "bert_score"
     enabled: true
 
   alba:
@@ -228,9 +218,7 @@ benchmarks:
     group: "exploratorio"
     metric: "accuracy"
     num_shots: 5
-    hub_id: null
-    # TODO: Identificar fonte do dataset ALBA
-    local_path: "data/benchmarks/alba.jsonl"
+    hub_id: "Se7enB/alba"
     enabled: false
 
   mariner:
@@ -238,9 +226,7 @@ benchmarks:
     group: "exploratorio"
     metric: "entity_micro_f1"
     num_shots: 0
-    hub_id: null
-    # TODO: Identificar hub_id do MariNER
-    local_path: "data/benchmarks/mariner.jsonl"
+    hub_id: "Se7enB/mariner_pt"
     enabled: false
 
   # =========================================================================

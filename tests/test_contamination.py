@@ -6,17 +6,15 @@ Integration tests require datasketch and are skipped if unavailable.
 
 import hashlib
 import re
-import sys
 import unicodedata
-from pathlib import Path
-
 import pytest
+import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 # --- Re-implement pure functions locally to avoid datasketch import ---
-
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
@@ -34,13 +32,12 @@ def ngrams(text: str, n: int = 5) -> set[str]:
     words = text.split()
     if len(words) < n:
         return {" ".join(words)}
-    return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
+    return {" ".join(words[i: i + n]) for i in range(len(words) - n + 1)}
 
 
 # Check if datasketch is available for integration tests
 try:
-    from datasketch import MinHash  # noqa: F401
-
+    from datasketch import MinHash
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False
@@ -214,9 +211,8 @@ class TestContaminationIntegration:
     @pytest.mark.skipif(not HAS_DATASKETCH, reason="datasketch not installed")
     def test_multiple_benchmarks(self):
         """run_contamination_report should handle multiple benchmarks."""
-        import tempfile
-
         from src.data.contamination_checks import run_contamination_report
+        import tempfile
 
         benchmarks = {
             "bench_a": ["text A for benchmark"],
@@ -229,50 +225,3 @@ class TestContaminationIntegration:
             assert "bench_a" in report["benchmarks"]
             assert "bench_b" in report["benchmarks"]
             assert "summary" in report
-
-
-class TestFallbackMinHash:
-    """Tests for the native FallbackMinHash class."""
-
-    def test_jaccard_similarity(self):
-        from src.data.cluster_dedup import FallbackMinHash
-
-        m1 = FallbackMinHash(num_perm=64)
-        m2 = FallbackMinHash(num_perm=64)
-
-        # Identical updates should give Jaccard = 1.0
-        m1.update(b"hello world")
-        m2.update(b"hello world")
-        assert m1.jaccard(m2) == 1.0
-
-        # Different updates
-        m3 = FallbackMinHash(num_perm=64)
-        m3.update(b"completely different sentence here")
-        # Jaccard should be low
-        assert m1.jaccard(m3) < 0.5
-
-
-class TestFallbackMinHashLSH:
-    """Tests for the native FallbackMinHashLSH class."""
-
-    def test_insert_and_query(self):
-        from src.data.cluster_dedup import FallbackMinHash, FallbackMinHashLSH
-
-        lsh = FallbackMinHashLSH(threshold=0.5, num_perm=64)
-
-        m1 = FallbackMinHash(num_perm=64)
-        m1.update(b"identical search query string")
-
-        m2 = FallbackMinHash(num_perm=64)
-        m2.update(b"identical search query string")
-
-        m3 = FallbackMinHash(num_perm=64)
-        m3.update(b"unrelated random text for index")
-
-        lsh.insert("doc1", m1)
-        lsh.insert("doc2", m3)
-
-        # Querying with m2 (similar to m1/doc1) should return doc1
-        results = lsh.query(m2)
-        assert "doc1" in results
-        assert "doc2" not in results

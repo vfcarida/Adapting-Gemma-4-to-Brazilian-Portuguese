@@ -13,11 +13,13 @@ IMPORTANTE: Gemma 4 é multimodal. Para CPT/SFT em texto puro, devemos
 congelar os encoders visuais e o projetor multimodal.
 """
 
+from pathlib import Path
 from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from src.utils.config_utils import load_config
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -74,7 +76,19 @@ def load_model_for_training(
     if model_config:
         model_cfg = model_config.get("model", {})
         if "attn_implementation" in model_cfg:
-            kwargs["attn_implementation"] = model_cfg["attn_implementation"]
+            attn_impl = model_cfg["attn_implementation"]
+            if attn_impl == "flash_attention_2":
+                try:
+                    import flash_attn  # noqa: F401
+                    kwargs["attn_implementation"] = attn_impl
+                except ImportError:
+                    logger.warning(
+                        "flash_attention_2 requested but flash-attn not installed. "
+                        "Falling back to sdpa (PyTorch native)."
+                    )
+                    kwargs["attn_implementation"] = "sdpa"
+            else:
+                kwargs["attn_implementation"] = attn_impl
 
     if quantize:
         quant_cfg = model_config.get("quantization", {}) if model_config else {}
@@ -115,14 +129,9 @@ def _freeze_multimodal_modules(model: torch.nn.Module) -> None:
     frozen_count = 0
     # Padrões de nomes de módulos multimodais em modelos Gemma 4
     multimodal_patterns = [
-        "vision_tower",
-        "vision_encoder",
-        "visual",
-        "multi_modal_projector",
-        "mm_projector",
-        "image_encoder",
-        "img_",
-        "pixel",
+        "vision_tower", "vision_encoder", "visual",
+        "multi_modal_projector", "mm_projector",
+        "image_encoder", "img_", "pixel",
     ]
 
     for name, param in model.named_parameters():
@@ -205,3 +214,129 @@ def supports_chat_template(tokenizer) -> bool:
         True se chat_template está disponível.
     """
     return hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
+
+
+def estimate_vram_gb(
+    model_params_b: float,
+    seq_length: int = 8192,
+    batch_size: int = 1,
+    grad_accum_steps: int = 16,
+    use_lora: bool = False,
+    lora_r: int = 64,
+    gradient_checkpointing: bool = True,
+    optimizer: str = "adamw",
+    dtype_bytes: int = 2,
+) -> dict[str, float]:
+    """Estimate GPU VRAM required for training.
+
+    Uses heuristic formulas based on model size, sequence length, and
+    training configuration. Intended as a preflight check before launching
+    expensive GCP instances.
+
+    Estimates are approximate (±20%) but sufficient to select GPU type:
+    - < 16 GB: T4 / L4
+    - < 24 GB: A10G / RTX 4090
+    - < 40 GB: A100-40GB
+    - < 80 GB: A100-80GB / H100
+    - > 80 GB: Multi-GPU required
+
+    Args:
+        model_params_b: Model size in billions of parameters.
+        seq_length: Maximum sequence length.
+        batch_size: Per-device batch size.
+        grad_accum_steps: Gradient accumulation steps (does not affect VRAM).
+        use_lora: Whether using LoRA (reduces optimizer states).
+        lora_r: LoRA rank (affects trainable param count).
+        gradient_checkpointing: Whether gradient checkpointing is enabled.
+        optimizer: Optimizer name ("adamw" uses 8 bytes/param for states).
+        dtype_bytes: Bytes per parameter (2 for bf16/fp16, 4 for fp32).
+
+    Returns:
+        Dict with component-wise VRAM breakdown and total estimate in GB.
+    """
+    params = model_params_b * 1e9
+
+    # Model weights
+    model_vram = params * dtype_bytes / 1e9
+
+    # Trainable parameters (LoRA reduces this significantly)
+    if use_lora:
+        # LoRA trainable params ≈ 2 * r * hidden_dim * num_layers * num_targets
+        # Rough estimate: ~2-4% of total params for typical configs
+        trainable_ratio = min(0.04, (2 * lora_r * 8) / (params / 1e6))
+        trainable_params = params * trainable_ratio
+    else:
+        trainable_params = params
+
+    # Optimizer states (AdamW: 2 states × dtype per trainable param)
+    if optimizer == "adamw":
+        # Adam stores m and v in fp32 regardless of model dtype
+        optimizer_vram = trainable_params * 8 / 1e9  # 4 bytes × 2 states
+    else:
+        optimizer_vram = trainable_params * 4 / 1e9
+
+    # Gradients (same dtype as model for trainable params)
+    gradients_vram = trainable_params * dtype_bytes / 1e9
+
+    # Activations (highly dependent on seq_length and batch_size)
+    # Use known model architecture parameters by size bracket
+    import math
+    if model_params_b <= 1.5:
+        hidden_dim, num_layers = 2048, 22
+    elif model_params_b <= 3:
+        hidden_dim, num_layers = 2560, 28
+    elif model_params_b <= 5:
+        hidden_dim, num_layers = 3072, 34
+    elif model_params_b <= 9:
+        hidden_dim, num_layers = 4096, 32
+    elif model_params_b <= 15:
+        hidden_dim, num_layers = 5120, 40
+    elif model_params_b <= 35:
+        hidden_dim, num_layers = 6656, 60
+    else:
+        hidden_dim, num_layers = 8192, 80
+
+    # Per-layer activation memory: batch * seq * hidden * dtype * factor
+    # Factor accounts for attention QKV, intermediate states (~4x hidden)
+    activation_factor = 4
+    activations_per_layer = (
+        batch_size * seq_length * hidden_dim * dtype_bytes * activation_factor
+    )
+    if gradient_checkpointing:
+        # Only store activations at checkpoint boundaries (~sqrt(layers))
+        active_layers = int(math.sqrt(num_layers)) + 1
+    else:
+        active_layers = num_layers
+
+    activations_vram = activations_per_layer * active_layers / 1e9
+
+    # CUDA kernels and fragmentation overhead (~5-10%)
+    overhead_ratio = 0.08
+    subtotal = model_vram + optimizer_vram + gradients_vram + activations_vram
+    overhead_vram = subtotal * overhead_ratio
+
+    total = subtotal + overhead_vram
+
+    return {
+        "model_weights_gb": round(model_vram, 2),
+        "optimizer_states_gb": round(optimizer_vram, 2),
+        "gradients_gb": round(gradients_vram, 2),
+        "activations_gb": round(activations_vram, 2),
+        "overhead_gb": round(overhead_vram, 2),
+        "total_estimated_gb": round(total, 2),
+        "recommended_gpu": _recommend_gpu(total),
+    }
+
+
+def _recommend_gpu(total_vram_gb: float) -> str:
+    """Recommend GPU type based on estimated VRAM requirement."""
+    if total_vram_gb <= 16:
+        return "T4 (16GB) or L4 (24GB)"
+    elif total_vram_gb <= 24:
+        return "L4 (24GB) or A10G (24GB)"
+    elif total_vram_gb <= 40:
+        return "A100-40GB"
+    elif total_vram_gb <= 80:
+        return "A100-80GB or H100-80GB"
+    else:
+        return f"Multi-GPU required (~{int(total_vram_gb/80)+1}x A100-80GB)"

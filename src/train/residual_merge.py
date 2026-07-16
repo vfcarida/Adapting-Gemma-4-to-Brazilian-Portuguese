@@ -1,18 +1,36 @@
-"""Residual merge via advanced merging techniques for instruction recovery.
+"""Residual merge via task arithmetic for instruction recovery.
 
-This module implements:
-1. Task Arithmetic (Ilharco et al., 2023)
-2. TIES-Merging (Yadav et al., 2023)
-3. DARE-Linear (Yu et al., 2023)
-4. DARE-TIES (Yu et al., 2023)
+This module implements the "task arithmetic" method from Ilharco et al. (2023)
+to recover instruction-following capability after continued pretraining.
 
-These advanced merging techniques resolve weight interference and parameter redundancy
-when transferring instruction-following capability to a continued pretrained model.
+The key insight: instruction-tuning creates a "task vector" (the difference
+between IT and base weights). This vector can be added to any checkpoint
+derived from the same base model to transfer instruction capability.
 
-Memory Management:
-- We load base and instruct models sequentially to get their state dicts.
-- We then load the CPT model once, merge the weights in-place directly on its parameters,
-  and save the modified model. This avoids reloading the CPT model and keeps RAM usage minimal.
+Formula:
+    instruction_residual = instruct_weights - base_weights
+    adapted_instruct = cpt_weights + alpha * instruction_residual
+
+Where:
+    - base_weights: Original pre-trained model (e.g., gemma-4-E4B)
+    - instruct_weights: Official instruction-tuned model (e.g., gemma-4-E4B-it)
+    - cpt_weights: Our CPT-adapted model (trained from base on Aurora-PT)
+    - alpha: Scaling factor controlling instruction strength
+
+Alpha interpretation:
+    - alpha = 0: Pure CPT model (no instruction capability)
+    - alpha = 1: Full instruction vector transfer
+    - alpha > 1: Amplified instructions (may degrade quality)
+    - alpha < 1: Partial transfer (may preserve more CPT adaptation)
+
+Memory management:
+    Loading 3 full models simultaneously requires significant RAM.
+    We load/unload models sequentially, keeping only state_dicts in memory.
+    For a 4B model in bfloat16, each state_dict is ~8GB, so peak usage is ~24GB RAM.
+
+References:
+    - Ilharco et al. "Editing Models with Task Arithmetic" (ICLR 2023)
+    - Yadav et al. "TIES-Merging" (NeurIPS 2023)
 """
 
 import gc
@@ -30,130 +48,6 @@ from src.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-def _trim_tensor(v: torch.Tensor, density: float) -> torch.Tensor:
-    """Trim a tensor, keeping only the top-k magnitude values."""
-    if density >= 1.0:
-        return v
-
-    flat = v.reshape(-1)
-    k = int(density * flat.numel())
-    if k <= 0:
-        return torch.zeros_like(v)
-    if k >= flat.numel():
-        return v
-
-    abs_flat = torch.abs(flat)
-    threshold, _ = torch.kthvalue(abs_flat, flat.numel() - k + 1)
-
-    mask = abs_flat >= threshold
-    return v * mask.reshape(v.shape)
-
-
-def _ties_elect_and_merge(trimmed_vectors: list[torch.Tensor]) -> torch.Tensor:
-    """Elect consensus sign and perform disjoint merge on task vectors."""
-    stacked = torch.stack(trimmed_vectors)  # (num_models, ...)
-
-    # Sign of updates
-    signs = torch.sign(stacked)
-
-    # Magnitude sums for positive and negative signs
-    pos_mask = stacked > 0
-    neg_mask = stacked < 0
-
-    pos_mag = torch.sum(torch.abs(stacked) * pos_mask.float(), dim=0)
-    neg_mag = torch.sum(torch.abs(stacked) * neg_mask.float(), dim=0)
-
-    # Consensus sign: 1 if positive magnitude is greater, else -1
-    consensus_sign = torch.where(pos_mag >= neg_mag, 1.0, -1.0)
-
-    # Keep only updates that agree with the consensus sign
-    agreement_mask = (signs == consensus_sign) & (stacked != 0)
-
-    # Sum of agreeing updates
-    agreeing_sum = torch.sum(stacked * agreement_mask.float(), dim=0)
-
-    # Count of agreeing updates
-    agreeing_count = torch.sum(agreement_mask.float(), dim=0)
-
-    # Average agreeing updates (avoid division by zero)
-    merged = torch.where(agreeing_count > 0, agreeing_sum / agreeing_count, 0.0)
-
-    return merged
-
-
-def merge_tensors(
-    base_w: torch.Tensor,
-    cpt_w: torch.Tensor,
-    instruct_w: torch.Tensor,
-    alpha: float,
-    method: str = "task_arithmetic",
-    density: float = 1.0,
-    seed: int = 42,
-) -> torch.Tensor:
-    """Merge base, CPT, and instruct tensors using the specified method."""
-    orig_dtype = base_w.dtype
-    device = base_w.device
-
-    # Fast path for standard task arithmetic
-    if method == "task_arithmetic" and density == 1.0:
-        return (cpt_w.to(torch.float32) + alpha * (instruct_w.to(torch.float32) - base_w.to(torch.float32))).to(orig_dtype)
-
-    base_f32 = base_w.to(torch.float32)
-    cpt_f32 = cpt_w.to(torch.float32)
-    instruct_f32 = instruct_w.to(torch.float32)
-
-    v1 = cpt_f32 - base_f32
-    v2 = instruct_f32 - base_f32
-
-    if method == "task_arithmetic":
-        v_merged = v1 + alpha * v2
-        return (base_f32 + v_merged).to(orig_dtype)
-
-    elif method == "dare_linear":
-        if density <= 0.0 or density > 1.0:
-            raise ValueError(f"Density must be in (0, 1], got {density}")
-
-        generator = torch.Generator(device=device).manual_seed(seed)
-
-        mask1 = (torch.rand(v1.shape, device=device, generator=generator) < density).float()
-        mask2 = (torch.rand(v2.shape, device=device, generator=generator) < density).float()
-
-        v1_dare = (v1 / density) * mask1
-        v2_dare = (v2 / density) * mask2
-
-        v_merged = v1_dare + alpha * v2_dare
-        return (base_f32 + v_merged).to(orig_dtype)
-
-    elif method == "ties":
-        if density <= 0.0 or density > 1.0:
-            raise ValueError(f"Density must be in (0, 1], got {density}")
-
-        v2_scaled = alpha * v2
-        v1_trimmed = _trim_tensor(v1, density)
-        v2_trimmed = _trim_tensor(v2_scaled, density)
-
-        v_merged = _ties_elect_and_merge([v1_trimmed, v2_trimmed])
-        return (base_f32 + v_merged).to(orig_dtype)
-
-    elif method == "dare_ties":
-        if density <= 0.0 or density > 1.0:
-            raise ValueError(f"Density must be in (0, 1], got {density}")
-
-        generator = torch.Generator(device=device).manual_seed(seed)
-
-        mask1 = (torch.rand(v1.shape, device=device, generator=generator) < density).float()
-        mask2 = (torch.rand(v2.shape, device=device, generator=generator) < density).float()
-
-        v1_dare = (v1 / density) * mask1
-        v2_dare = ((alpha * v2) / density) * mask2
-
-        v_merged = _ties_elect_and_merge([v1_dare, v2_dare])
-        return (base_f32 + v_merged).to(orig_dtype)
-
-    else:
-        raise ValueError(f"Unknown merging method: {method}")
-
-
 def compute_residual_merge(
     base_model_id: str,
     instruct_model_id: str,
@@ -162,22 +56,50 @@ def compute_residual_merge(
     output_dir: str,
     device: str = "cpu",
     dtype: torch.dtype = torch.bfloat16,
-    method: str = "task_arithmetic",
-    density: float = 1.0,
-    seed: int = 42,
+    compute_dtype: torch.dtype = torch.float32,
 ) -> Path:
-    """Compute residual merge using in-place operations to minimize RAM usage."""
+    """Compute residual merge and save the result.
+
+    Loads all three models (base, instruct, CPT), computes the instruction
+    residual, applies it to the CPT weights with scaling factor alpha,
+    and saves the merged model.
+
+    IMPORTANT: Arithmetic is performed in float32 (compute_dtype) to avoid
+    accumulation errors from bfloat16. The final merged weights are cast
+    back to the storage dtype (bfloat16) for saving.
+
+    Args:
+        base_model_id: HuggingFace ID of the original base model.
+            Must be the exact model that was continued-pretrained.
+        instruct_model_id: HuggingFace ID of the instruction-tuned variant.
+            Must share the same architecture as base_model_id.
+        cpt_model_path: Local path to the CPT-adapted model checkpoint.
+        alpha: Scaling factor for the instruction residual.
+            Typical range: [0.5, 1.2]. Start with 1.0.
+        output_dir: Directory to save merged model. A subdirectory
+            `alpha_X.XX` will be created for each alpha value.
+        device: Device for computation. Use "cpu" to avoid GPU memory issues.
+        dtype: Data type for model loading and final storage.
+        compute_dtype: Data type for merge arithmetic (float32 recommended
+            to avoid precision loss in subtraction/addition).
+
+    Returns:
+        Path to the saved merged model directory.
+
+    Raises:
+        RuntimeError: If model loading fails or shapes are incompatible.
+    """
     output_path = Path(output_dir) / f"alpha_{alpha:.2f}"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Computing residual merge using method={method} (alpha={alpha:.2f}, density={density})")
+    logger.info(f"Computing residual merge with alpha={alpha}")
     logger.info(f"  Base: {base_model_id}")
     logger.info(f"  Instruct: {instruct_model_id}")
     logger.info(f"  CPT: {cpt_model_path}")
 
     start_time = time.time()
 
-    # --- Load state dicts sequentially to minimize RAM ---
+    # --- Load state dicts sequentially to minimize peak memory ---
 
     logger.info("Loading base model weights...")
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -185,7 +107,7 @@ def compute_residual_merge(
     )
     base_state = base_model.state_dict()
     del base_model
-    gc.collect()
+    gc.collect()  # Free model graph, keep only state dict
 
     logger.info("Loading instruct model weights...")
     instruct_model = AutoModelForCausalLM.from_pretrained(
@@ -195,53 +117,58 @@ def compute_residual_merge(
     del instruct_model
     gc.collect()
 
-    logger.info("Loading CPT model for in-place modification...")
+    logger.info("Loading CPT model weights...")
     cpt_model = AutoModelForCausalLM.from_pretrained(
         cpt_model_path, torch_dtype=dtype, device_map=device
     )
+    cpt_state = cpt_model.state_dict()
+    del cpt_model
+    gc.collect()
 
     # --- Validate parameter compatibility ---
 
+    logger.info("Validating parameter shapes...")
     base_keys = set(base_state.keys())
     instruct_keys = set(instruct_state.keys())
-    cpt_state = cpt_model.state_dict()
     cpt_keys = set(cpt_state.keys())
 
+    # Warn about key mismatches (shouldn't happen with same model family)
+    if base_keys != instruct_keys:
+        missing = base_keys - instruct_keys
+        extra = instruct_keys - base_keys
+        if missing:
+            logger.warning(f"Keys in base but not instruct: {list(missing)[:5]}")
+        if extra:
+            logger.warning(f"Keys in instruct but not base: {list(extra)[:5]}")
+
+    # Only merge parameters present in all three models
     common_keys = base_keys & instruct_keys & cpt_keys
     logger.info(f"Common keys: {len(common_keys)} / {len(cpt_keys)} total")
 
-    # --- Compute merge in-place directly on CPT model parameters ---
+    # --- Compute merge: cpt + alpha * (instruct - base) ---
 
-    logger.info(f"Merging weights in-place...")
+    logger.info(f"Computing merge (alpha={alpha}, compute_dtype={compute_dtype})...")
+    merged_state = {}
     shape_mismatches = []
 
-    with torch.no_grad():
-        for key in tqdm(common_keys, desc="Merging"):
-            base_w = base_state[key]
-            instruct_w = instruct_state[key]
-            cpt_w = cpt_state[key]
+    for key in tqdm(common_keys, desc="Merging"):
+        base_w = base_state[key]
+        instruct_w = instruct_state[key]
+        cpt_w = cpt_state[key]
 
-            # Validate shape
-            if base_w.shape != instruct_w.shape or base_w.shape != cpt_w.shape:
-                shape_mismatches.append(key)
-                continue
+        # Shape validation - all three must match for arithmetic
+        if base_w.shape != instruct_w.shape or base_w.shape != cpt_w.shape:
+            shape_mismatches.append(key)
+            # Fallback: use CPT weights unchanged (safe default)
+            merged_state[key] = cpt_w
+            continue
 
-            # Only perform merge arithmetic on floating point weights
-            if not torch.is_floating_point(cpt_w):
-                continue
-
-            merged_w = merge_tensors(
-                base_w=base_w,
-                cpt_w=cpt_w,
-                instruct_w=instruct_w,
-                alpha=alpha,
-                method=method,
-                density=density,
-                seed=seed,
-            )
-
-            # Copy in-place
-            cpt_w.copy_(merged_w)
+        # Core task arithmetic in float32 to avoid precision loss
+        # (bfloat16 subtraction can accumulate significant errors)
+        residual = instruct_w.to(compute_dtype) - base_w.to(compute_dtype)
+        merged = cpt_w.to(compute_dtype) + alpha * residual
+        # Cast back to storage dtype for saving
+        merged_state[key] = merged.to(dtype)
 
     if shape_mismatches:
         logger.warning(
@@ -249,41 +176,51 @@ def compute_residual_merge(
             f"{len(shape_mismatches)} params: {shape_mismatches[:5]}"
         )
 
-    # Free base and instruct state dicts to release RAM before saving
-    del base_state, instruct_state
+    # Include CPT-only keys (e.g., added during LoRA merge)
+    for key in cpt_keys - common_keys:
+        merged_state[key] = cpt_state[key]
+
+    # Free source state dicts
+    del base_state, instruct_state, cpt_state
     gc.collect()
 
     # --- Save merged model ---
 
     logger.info(f"Saving merged model to {output_path}")
+
+    # Load model architecture from CPT checkpoint to get correct config
+    cpt_model = AutoModelForCausalLM.from_pretrained(
+        cpt_model_path, torch_dtype=dtype, device_map=device
+    )
+    cpt_model.load_state_dict(merged_state, strict=False)
     cpt_model.save_pretrained(output_path)
     del cpt_model
     gc.collect()
 
-    # Copy tokenizer
+    # Copy tokenizer (unchanged by merge)
     tokenizer = AutoTokenizer.from_pretrained(cpt_model_path)
     tokenizer.save_pretrained(output_path)
 
-    # Save metadata
+    # Save metadata for reproducibility
     elapsed = time.time() - start_time
     metadata = {
-        "method": method,
-        "alpha": alpha,
-        "density": density,
-        "seed": seed,
+        "method": "residual_merge_task_arithmetic",
+        "formula": "cpt_weights + alpha * (instruct_weights - base_weights)",
         "base_model_id": base_model_id,
         "instruct_model_id": instruct_model_id,
         "cpt_model_path": str(cpt_model_path),
+        "alpha": alpha,
         "num_params_merged": len(common_keys),
         "num_shape_mismatches": len(shape_mismatches),
         "shape_mismatch_keys": shape_mismatches[:20],
         "elapsed_seconds": elapsed,
-        "dtype": str(dtype),
+        "storage_dtype": str(dtype),
+        "compute_dtype": str(compute_dtype),
     }
     with open(output_path / "merge_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
-    logger.info(f"Merge complete in {elapsed:.1f}s (method={method}, alpha={alpha})")
+    logger.info(f"Merge complete in {elapsed:.1f}s (alpha={alpha})")
     return output_path
 
 
@@ -294,18 +231,30 @@ def alpha_sweep(
     alphas: list[float],
     output_dir: str,
     device: str = "cpu",
-    method: str = "task_arithmetic",
-    density: float = 1.0,
-    seed: int = 42,
 ) -> list[dict[str, Any]]:
-    """Run merge for multiple alpha values to find optimal scaling."""
+    """Run merge for multiple alpha values to find optimal scaling.
+
+    Each alpha produces a separate model. After sweep, evaluate all models
+    on benchmarks to find the best alpha (typically between 0.7 and 1.0).
+
+    Args:
+        base_model_id: Original base model ID.
+        instruct_model_id: Original instruct model ID.
+        cpt_model_path: Path to CPT checkpoint.
+        alphas: List of alpha values to try.
+        output_dir: Parent directory for all merged models.
+        device: Computation device.
+
+    Returns:
+        List of {"alpha": float, "path": str} for each completed merge.
+    """
     output_dir = Path(output_dir)
     results = []
 
     for alpha in alphas:
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"Alpha sweep: {alpha:.2f}")
-        logger.info(f"{'=' * 60}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Alpha sweep: {alpha}")
+        logger.info(f"{'='*60}")
 
         path = compute_residual_merge(
             base_model_id=base_model_id,
@@ -314,12 +263,10 @@ def alpha_sweep(
             alpha=alpha,
             output_dir=str(output_dir),
             device=device,
-            method=method,
-            density=density,
-            seed=seed,
         )
         results.append({"alpha": alpha, "path": str(path)})
 
+    # Save sweep summary for easy lookup
     with open(output_dir / "sweep_results.json", "w") as f:
         json.dump(results, f, indent=2)
 
@@ -331,41 +278,35 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run Advanced Weight Merging (TIES, DARE, Task Arithmetic)",
+        description="Run Residual Merge (Task Arithmetic)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single alpha
+  python -m src.train.residual_merge \\
+      --base-model google/gemma-4-E4B \\
+      --instruct-model google/gemma-4-E4B-it \\
+      --cpt-model outputs/cpt_main/final \\
+      --alpha 1.0
+
+  # Alpha sweep
+  python -m src.train.residual_merge \\
+      --base-model google/gemma-4-E4B \\
+      --instruct-model google/gemma-4-E4B-it \\
+      --cpt-model outputs/cpt_main/final \\
+      --alpha 0.5 0.7 0.8 0.9 1.0 1.1 1.2
+        """,
     )
     parser.add_argument("--base-model", type=str, required=True, help="Base model HF ID")
     parser.add_argument("--instruct-model", type=str, required=True, help="Instruct model HF ID")
     parser.add_argument("--cpt-model", type=str, required=True, help="Path to CPT model")
     parser.add_argument(
-        "--alpha",
-        type=float,
-        nargs="+",
+        "--alpha", type=float, nargs="+",
         default=[0.5, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
         help="Alpha value(s) for instruction residual scaling",
     )
     parser.add_argument("--output-dir", type=str, default="outputs/residual_merge")
     parser.add_argument("--device", type=str, default="cpu", help="cpu or cuda")
-    parser.add_argument(
-        "--method",
-        type=str,
-        default="task_arithmetic",
-        choices=["task_arithmetic", "ties", "dare_linear", "dare_ties"],
-        help="Weight merging algorithm to use",
-    )
-    parser.add_argument(
-        "--density",
-        type=float,
-        default=1.0,
-        help="Density / keep probability fraction for TIES/DARE",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for DARE drop reproducibility",
-    )
-
     args = parser.parse_args()
 
     if len(args.alpha) == 1:
@@ -376,9 +317,6 @@ def main():
             alpha=args.alpha[0],
             output_dir=args.output_dir,
             device=args.device,
-            method=args.method,
-            density=args.density,
-            seed=args.seed,
         )
     else:
         alpha_sweep(
@@ -388,9 +326,6 @@ def main():
             alphas=args.alpha,
             output_dir=args.output_dir,
             device=args.device,
-            method=args.method,
-            density=args.density,
-            seed=args.seed,
         )
 
 

@@ -1,22 +1,15 @@
-#!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════════════════════╗
-# ║  Run Supervised Fine-Tuning (SFT)                                   ║
-# ╚══════════════════════════════════════════════════════════════════════╝
+#!/bin/bash
 set -euo pipefail
 
+# Run SFT on CPT checkpoint
+echo "=== Supervised Fine-Tuning ==="
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    set -a; source "$PROJECT_ROOT/.env"; set +a
-fi
+python3 -m src.train.sft_trainer --config configs/train/sft.yaml
 
-echo "═══ Supervised Fine-Tuning (SFT) ═══"
-echo "⚠️  Make sure configs/sft.yml → data.dataset_id is set to a valid"
-echo "   instruction dataset. NEVER use Aurora-PT raw text here."
-
-python -m src.train.sft_trainer \
-    --config configs/sft.yml \
-    "$@"
-
-echo "✓ SFT complete — checkpoint at output/sft/final/"
+echo ""
+echo "=== SFT complete ==="
+echo "Model saved to outputs/sft/final"

@@ -5,14 +5,7 @@ import pytest
 pytest.importorskip("scipy")
 pytest.importorskip("sklearn")
 
-from src.eval.metrics import (
-    accuracy,
-    compute_metrics_for_task,
-    macro_f1,
-    pearson,
-    refusal_rate,
-    rouge_l,
-)
+from src.eval.metrics import accuracy, macro_f1, pearson, refusal_rate, rouge_l, compute_metrics_for_task
 
 
 class TestAccuracy:

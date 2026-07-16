@@ -25,11 +25,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+import torch
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTConfig, SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 from src.data.instruction_data_builder import InstructionDataBuilder, format_gemma4_chat
-from src.train.callbacks import LocalMetricsCallback, ThroughputCallback
+from src.train.callbacks import ThroughputCallback, LocalMetricsCallback, WandBCallback
 from src.utils.checkpointing import find_latest_checkpoint, save_training_state
 from src.utils.config_utils import load_config
 from src.utils.hf_utils import load_model_for_training, load_tokenizer
@@ -126,18 +127,10 @@ class SFTTrainerWrapper:
                 lora_alpha=lora_cfg.get("lora_alpha", 64),
                 lora_dropout=lora_cfg.get("lora_dropout", 0.05),
                 # Target all linear layers in the transformer for best results
-                target_modules=lora_cfg.get(
-                    "target_modules",
-                    [
-                        "q_proj",
-                        "k_proj",
-                        "v_proj",
-                        "o_proj",
-                        "gate_proj",
-                        "up_proj",
-                        "down_proj",
-                    ],
-                ),
+                target_modules=lora_cfg.get("target_modules", [
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj",
+                ]),
                 task_type="CAUSAL_LM",
                 bias="none",
             )
@@ -201,6 +194,15 @@ class SFTTrainerWrapper:
             callbacks=[
                 ThroughputCallback(metrics_logger),
                 LocalMetricsCallback(metrics_logger),
+                WandBCallback(
+                    project="gemma4-pt-br-adaptation",
+                    config=self.config,
+                    tags=[
+                        self.config.get("experiment", {}).get("trilha", "unknown"),
+                        "sft",
+                        "lora" if use_lora else "full",
+                    ],
+                ),
             ],
         )
 

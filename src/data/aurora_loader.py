@@ -9,14 +9,17 @@ Key design decisions:
 - Document-level split prevents data leakage between train/val
 - Hash-based splitting is deterministic and idempotent
 - Sequence packing eliminates padding waste for variable-length documents
-- No special separator between packed documents (standard CPT practice)
+- EOS token inserted between packed documents to signal boundaries
+- Optional curriculum sorting (shorter/cleaner docs first)
 """
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Any
 
 from datasets import Dataset, load_dataset
+from tqdm import tqdm
 
 from src.utils.logging_utils import get_logger
 
@@ -131,11 +134,12 @@ class AuroraLoader:
         Returns:
             Dict with "train" and "validation" Dataset objects.
         """
-
         def assign_split(example, idx):
             # Hash first 500 chars for deterministic assignment
             # MD5 is fine here (not security-critical, just uniform distribution)
-            doc_hash = hashlib.md5(example["text"][:500].encode()).hexdigest()
+            doc_hash = hashlib.md5(
+                example["text"][:500].encode()
+            ).hexdigest()
             # Convert first 8 hex digits to float in [0, 1]
             hash_val = int(doc_hash[:8], 16) / 0xFFFFFFFF
             example["_split"] = "val" if hash_val < self.val_ratio else "train"
@@ -175,6 +179,8 @@ def tokenize_for_cpt(
     tokenizer,
     max_seq_length: int = 8192,
     pack: bool = True,
+    curriculum_sort: bool = False,
+    mask_cross_doc_labels: bool = False,
 ) -> Dataset:
     """Tokenize and optionally pack sequences for causal LM training.
 
@@ -188,18 +194,31 @@ def tokenize_for_cpt(
         max_seq_length: Target sequence length for packing.
         pack: If True, concatenate documents into fixed-length sequences.
               If False, truncate each document independently.
+        curriculum_sort: If True, sort documents by length (shorter first)
+            before packing. This implements a simple curriculum learning
+            strategy where shorter (typically cleaner) documents are seen
+            first during training.
+        mask_cross_doc_labels: If True, set labels to -100 at document
+            boundaries in packed sequences. Prevents cross-document loss.
 
     Returns:
         Dataset with "input_ids" and "labels" columns, ready for training.
     """
-
     def tokenize_fn(examples):
         return tokenizer(
             examples["text"],
-            truncation=False,  # Don't truncate - packing handles length
-            padding=False,  # No padding - packing fills sequences
+            truncation=False,      # Don't truncate - packing handles length
+            padding=False,         # No padding - packing fills sequences
             return_attention_mask=False,  # Not needed for packed CPT
         )
+
+    if curriculum_sort:
+        logger.info("Curriculum sort: ordering documents by length (shorter first)...")
+        dataset = dataset.map(
+            lambda x: {"_len": len(x["text"])}, desc="Computing lengths"
+        )
+        dataset = dataset.sort("_len")
+        dataset = dataset.remove_columns(["_len"])
 
     logger.info("Tokenizing dataset...")
     tokenized = dataset.map(
@@ -210,52 +229,96 @@ def tokenize_for_cpt(
     )
 
     if pack:
-        tokenized = pack_sequences(tokenized, max_seq_length)
+        eos_token_id = tokenizer.eos_token_id
+        tokenized = pack_sequences(
+            tokenized, max_seq_length,
+            eos_token_id=eos_token_id,
+            mask_cross_doc_labels=mask_cross_doc_labels,
+        )
 
     return tokenized
 
 
-def pack_sequences(tokenized_dataset: Dataset, max_seq_length: int) -> Dataset:
+def pack_sequences(
+    tokenized_dataset: Dataset,
+    max_seq_length: int,
+    eos_token_id: int | None = None,
+    mask_cross_doc_labels: bool = False,
+) -> Dataset:
     """Pack multiple documents into fixed-length sequences.
 
     Concatenates tokenized documents into a continuous stream, then slices
     into chunks of exactly max_seq_length. This eliminates padding waste
     and maximizes GPU utilization.
 
-    Note: No separator tokens are inserted between documents. This is
-    standard practice for CPT, as the model learns document boundaries
-    implicitly from content patterns.
+    An EOS token is inserted between documents to signal document boundaries.
+    Without this separator, the model may learn spurious cross-document
+    associations (e.g., predicting tokens from document B given context from
+    document A's ending).
 
-    Leftover tokens (< max_seq_length) at the end of a batch are carried
-    over to the next batch via the buffer.
+    Optionally, labels at document boundaries can be set to -100 (ignored by
+    CrossEntropyLoss), preventing the model from being penalized for failing
+    to predict the first token of a new document given unrelated context.
+    This is a lightweight alternative to full document attention masking.
+
+    Leftover tokens (< max_seq_length) at the end of a batch are discarded.
+    With large datasets, this loss is negligible.
 
     Args:
         tokenized_dataset: Dataset with "input_ids" column (list of ints).
         max_seq_length: Fixed length for each output sequence.
+        eos_token_id: Token ID to insert between documents. If None,
+            no separator is inserted (legacy behavior).
+        mask_cross_doc_labels: If True, set labels to -100 at positions
+            immediately after EOS separators (first token of each new
+            document in a packed sequence). This prevents cross-document
+            loss while keeping the simple packing approach.
 
     Returns:
         Dataset with "input_ids" and "labels" columns, each of length
         max_seq_length. Labels are identical to input_ids (causal LM
-        objective: predict the next token at each position).
+        objective: predict the next token at each position), except at
+        masked boundary positions when mask_cross_doc_labels=True.
     """
+    IGNORE_INDEX = -100
 
     def pack_fn(examples):
         all_input_ids = []
         all_labels = []
         buffer = []  # Accumulates tokens across documents
+        # Track positions of EOS separators for label masking
+        boundary_positions = []
 
         for ids in examples["input_ids"]:
+            # Insert EOS separator between documents (not before the first)
+            if buffer and eos_token_id is not None:
+                boundary_positions.append(len(buffer))
+                buffer.append(eos_token_id)
             buffer.extend(ids)
             # Slice full sequences from buffer
             while len(buffer) >= max_seq_length:
                 chunk = buffer[:max_seq_length]
-                all_input_ids.append(chunk)
-                # For causal LM, labels = input_ids (shifted internally by the model)
-                all_labels.append(chunk.copy())
-                buffer = buffer[max_seq_length:]
+                labels = chunk.copy()
 
-        # Note: remaining tokens in buffer are discarded per batch.
-        # With large datasets, this loss is negligible.
+                # Mask labels at cross-document boundaries
+                if mask_cross_doc_labels:
+                    for pos in boundary_positions:
+                        if pos < max_seq_length:
+                            # Mask the EOS and the token after it
+                            labels[pos] = IGNORE_INDEX
+                            if pos + 1 < max_seq_length:
+                                labels[pos + 1] = IGNORE_INDEX
+
+                all_input_ids.append(chunk)
+                all_labels.append(labels)
+                buffer = buffer[max_seq_length:]
+                # Adjust boundary positions for consumed tokens
+                boundary_positions = [
+                    p - max_seq_length for p in boundary_positions
+                    if p >= max_seq_length
+                ]
+
+        # Remaining tokens in buffer are discarded per batch.
         return {"input_ids": all_input_ids, "labels": all_labels}
 
     logger.info(f"Packing sequences to length {max_seq_length}...")

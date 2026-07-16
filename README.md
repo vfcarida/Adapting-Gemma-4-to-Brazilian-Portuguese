@@ -1,237 +1,653 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/PyTorch-2.2+-ee4c2c?logo=pytorch" alt="PyTorch">
+  <img src="https://img.shields.io/badge/Transformers-4.45+-yellow?logo=huggingface" alt="Transformers">
+  <img src="https://img.shields.io/badge/Tests-216%20passed-green?logo=pytest" alt="Tests">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
+</p>
+
 # 🇧🇷 Adapting Gemma 4 to Brazilian Portuguese
 
-> **Production-grade pipeline for computationally adapting Google Gemma 4 to Portuguese (pt-BR) via the Aurora-PT corpus (331B tokens).**
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Framework: HuggingFace](https://img.shields.io/badge/🤗-Transformers-yellow.svg)](https://huggingface.co/)
-[![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: Passing](https://img.shields.io/badge/tests-223_passed-success.svg)](#)
+> Systematic adaptation of Google's Gemma 4 models to Brazilian Portuguese using Continued Pre-Training (CPT) on the Aurora-PT corpus (~331B tokens), with rigorous evaluation across 20+ benchmarks.
 
 ---
 
-## 📋 Scientific Overview
+## 📋 Table of Contents
 
-This repository implements a rigorous **five-stage adaptation pipeline** intended to produce state-of-the-art results for Brazilian Portuguese, moving beyond simple instruction-tuning to proper language adaptation. 
+- [Overview](#overview)
+- [Quick Start](#-quick-start)
+- [GCP Deployment (Step-by-Step)](#-gcp-deployment-step-by-step)
+- [Project Structure](#-project-structure)
+- [Pipeline Stages](#-pipeline-stages)
+- [Configuration System](#-configuration-system)
+- [Evaluation Suite](#-evaluation-suite)
+- [CLI Reference](#-cli-reference)
+- [Testing](#-testing)
+- [Models & Baselines](#-models--baselines)
+- [Research Background](#-research-background)
+- [Reproducibility](#-reproducibility)
+- [Documentation Map](#-documentation-map)
+- [Hardware Requirements](#-hardware-requirements)
+- [Troubleshooting](#-troubleshooting)
 
-Our strategy strictly separates **Language Adaptation (CPT)** from **Instruction Alignment (SFT/DPO)**, preventing the catastrophic forgetting often seen when continuously pretraining on instruction-tuned models.
+---
 
-```mermaid
-graph TD
-    subgraph Pre-flight & Validation
-        PF[gemma4pt preflight<br>Check Env / CUDA / Storage]
-        DC[gemma4pt contamination-check<br>MinHash LSH / Exact / Ngram]
-        TA[gemma4pt tokenizer-audit<br>Fertility Analysis]
-    end
+## Overview
 
-    subgraph Data Pipeline
-        AP[Aurora-PT Dataset<br>331B Tokens] --> LB[AuroraLoader<br>Sequence Packing / Mix Replay]
-    end
+This repository implements a complete, production-ready pipeline for adapting Google's Gemma 4 large language models to Brazilian Portuguese. The approach combines:
 
-    subgraph Training Stage
-        GM[Gemma-4 Base] --> CPT[train-cpt<br>Continued Pretraining]
-        LB --> CPT
-    end
+1. **Continued Pre-Training (CPT)** on the Aurora-PT corpus with English replay to prevent catastrophic forgetting
+2. **Residual Merge** (Task Arithmetic) to recover instruction-following without additional training
+3. **Supervised Fine-Tuning (SFT)** as an alternative instruction recovery path
+4. **Rigorous Evaluation** with bootstrap confidence intervals across 20+ Portuguese benchmarks
 
-    subgraph Alignment & Merging
-        CPT --> AM[Weight Merging]
-        GM --> AM
-        IT[Gemma-4 IT] --> AM
-        
-        subgraph Merging Algorithms
-            AM --> |Task Arithmetic| TA_M[cpt + alpha * residual]
-            AM --> |TIES-Merge| TI_M[Trim + Elect Sign + Merge]
-            AM --> |DARE-TIES| DT_M[Drop + Rescale + TIES]
-        end
-    end
+The project follows scientific best practices from recent CPT research (Sabiá, Tucano, Biderman et al. 2024, Ibrahim et al. 2024) and is designed to run on Google Cloud Platform (GCP) with A100/H100 GPUs.
 
-    subgraph Evaluation
-        TA_M & TI_M & DT_M --> EV[gemma4pt eval<br>Single-Load Memory Cache]
-        EV --> RB[gemma4pt report<br>Findings & Stats]
-    end
+### Scientific Objectives
 
-    style PF fill:#e1f5fe,stroke:#01579b
-    style DC fill:#e1f5fe,stroke:#01579b
-    style TA fill:#e1f5fe,stroke:#01579b
-    style LB fill:#fff3e0,stroke:#e65100
-    style CPT fill:#fff3e0,stroke:#e65100
-    style AM fill:#e8f5e9,stroke:#1b5e20
-    style TA_M fill:#f3e5f5,stroke:#4a148c
-    style TI_M fill:#f3e5f5,stroke:#4a148c
-    style DT_M fill:#f3e5f5,stroke:#4a148c
-    style EV fill:#ffe0b2,stroke:#e65100
-    style RB fill:#ffe0b2,stroke:#e65100
-```
-
-### 🔬 Core Methodology & Golden Rules
-1. **The Golden Rule**: Aurora-PT is an unstructured corpus and is **never** used inside an `SFTTrainer`. It is processed strictly via `CausalLM` next-token prediction with packed sequences.
-2. **Replay Mix Strategy**: To preserve emergent downstream capabilities and coding skills, our CPT stage utilizes probabilistic dataset interleaving. We mix Portuguese (Aurora-PT) with high-quality English (e.g., FineWeb-Edu) and optional Code (e.g., StarCoder).
-3. **LoRA Safety Validation**: Gemma 4 utilizes `Gemma4ClippableLinear` in its vision and audio towers. We explicitly restrict our LoRA `target_modules` to language projections to prevent architectural crashes.
-4. **Think Mode Isolation**: Evaluations are strictly isolated. We run all benchmarks in both `think_on` and `think_off` parametric modes to decouple native language improvements from chain-of-thought reasoning artifacts.
-5. **Multi-tier Decontamination**: We run MinHash LSH and Exact/Normalized overlap checks against all benchmark datasets prior to training to ensure clean data validation.
-
-## 📚 The Aurora-PT Dataset
-
-**Aurora-PT** is a foundational, massive-scale dataset comprising **331B tokens** of high-quality Portuguese text. It is designed to act as the ultimate pretraining resource for adapting LLMs to the Portuguese language.
-
-- **Size**: ~331 Billion tokens.
-- **Role in Gemma 4**: It is strictly used for the **CPT (Continued Pretraining)** stage to inject profound linguistic representations.
-- **Structure**: Unstructured text, processed entirely via causal modeling (next-token prediction), safely separating linguistic syntax from instruction-following behaviors.
+| Hypothesis | What we test |
+|------------|-------------|
+| H1 | CPT on Aurora-PT improves Portuguese benchmarks |
+| H2 | English replay (10-15%) prevents catastrophic forgetting |
+| H3 | Residual merge recovers instruction-following without SFT |
+| H4 | CPT + SFT > CPT + Residual Merge overall |
+| H5 | Think mode improves complex reasoning (ENEM, OAB) |
+| H6 | DoRA ≥ LoRA for CPT adaptation |
+| H7 | Higher LoRA rank (r=128) outperforms r=64 for CPT |
+| H8 | 50B tokens > 20B tokens (scaling law) |
 
 ---
 
 ## 🚀 Quick Start
 
+### Local Setup (CPU — tests, validation, development)
+
 ```bash
 # 1. Clone the repository
-git clone https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese
+git clone https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese.git
 cd Adapting-Gemma-4-to-Brazilian-Portuguese
 
-# 2. Install (Development / CPU mode)
+# 2. Create virtual environment
+python3 -m venv .venv && source .venv/bin/activate
+
+# 3. Install dependencies
 pip install -e ".[dev]"
 
-# 3. (Optional) Install GPU and Training dependencies
-pip install -e ".[gpu]"    # or ".[all]" for full stack
-```
-
-# 2. Validate environment
-gemma4pt preflight
-
-# 3. Run tests
+# 4. Run full test suite (216 tests, ~3s, no GPU needed)
 pytest tests/ -q
 
-# 4. End-to-end Smoke test (CPU)
-gemma4pt smoke
+# 5. Validate environment readiness
+bash scripts/preflight.sh
 
-# 5. Train (when GPU is available)
+# 6. (Optional) Smoke test
+gemma4pt smoke
+```
+
+### GPU Setup (Training & Evaluation)
+
+```bash
+# Install with GPU dependencies
+pip install -e ".[gpu,eval]"
+
+# Validate GPU and VRAM
+bash scripts/preflight.sh --config configs/train/cpt_pilot.yaml
+
+# Launch pilot training
 gemma4pt train-cpt configs/train/cpt_pilot.yaml
 ```
 
-## 🛠️ CLI (`gemma4pt`)
+---
 
-The project now includes a powerful CLI to manage the entire pipeline:
+## ☁️ GCP Deployment (Step-by-Step)
+
+This section provides a complete guide to deploy and run the full pipeline on Google Cloud Platform.
+
+### Prerequisites
+
+| Requirement | How to get it |
+|-------------|---------------|
+| GCP Account with billing | [console.cloud.google.com](https://console.cloud.google.com) |
+| `gcloud` CLI installed | `curl https://sdk.cloud.google.com \| bash` |
+| GPU quota (A100) | Console → IAM & Admin → Quotas → search "A100" → Request increase |
+| HuggingFace token | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — needs Gemma access |
+| (Optional) W&B account | [wandb.ai](https://wandb.ai) for experiment tracking |
+
+### Step 1: Configure Environment Variables
+
 ```bash
-gemma4pt preflight          # Valida ambiente
-gemma4pt smoke              # Smoke test E2E
-gemma4pt data-validate      # Valida dados
-gemma4pt contamination-check # Verifica contaminação
-gemma4pt tokenizer-audit    # Fertilidade tokenizer
-gemma4pt train-cpt CONFIG   # Continued Pretraining
-gemma4pt train-sft CONFIG   # SFT
-gemma4pt merge              # Residual merge
-gemma4pt eval               # Avaliação benchmarks
-gemma4pt report             # Gera relatórios
-gemma4pt manifest           # Manifesto reprodutibilidade
-gemma4pt run-all            # Pipeline completo
+# Copy the template and fill in your values
+cp infra/gcp/ENV_TEMPLATE.sh .env.gcp
+
+# Edit with your GCP project ID, zone, bucket name
+nano .env.gcp
+
+# Source it
+source .env.gcp
 ```
-*(All operations support `--dry-run`, `--tiny`, and `--cpu-only` flags).*
 
----
-
-## 🧬 Advanced Weight Merging
-
-To recover instruction capability after CPT, this pipeline implements state-of-the-art parameter merging algorithms inside `src/train/residual_merge.py`. These prevent weight interference and sign conflicts:
-
-*   **Task Arithmetic (Linear):** Direct addition of the instruction task vector: `CPT + alpha * (IT - Base)`.
-*   **TIES-Merging:** Trims small parameter deltas, elects consensus signs across task vectors, and merges only agreeing updates (averaging the updates).
-*   **DARE-Linear:** Prunes weights randomly using a Bernoulli drop mask and rescales remaining weights by `1 / density` to preserve expectation, followed by a linear merge.
-*   **DARE-TIES:** Combines random drop-and-rescale (DARE) with consensus sign election and disjoint merging (TIES).
-
-### Merging CLI Usage
+**Required variables in `.env.gcp`:**
 ```bash
-# Run TIES-Merge with density 0.6 and alpha 0.8
-gemma4pt merge \
-  --base-model google/gemma-4-E4B \
-  --instruct-model google/gemma-4-E4B-it \
-  --cpt-model outputs/cpt_main/final \
-  --alpha 0.8 \
-  --method ties \
-  --density 0.6 \
-  --output-dir outputs/residual_merge
+export GCP_PROJECT_ID="your-gcp-project-id"
+export GCP_REGION="us-central1"
+export GCP_ZONE="us-central1-a"
+export GCS_BUCKET="gs://your-bucket-name"
+export HF_TOKEN="hf_your_token_here"
+export WANDB_API_KEY="your_wandb_key"  # optional
+```
 
-# Run DARE-TIES merge sweep over multiple alpha values
-gemma4pt merge \
-  --base-model google/gemma-4-E4B \
-  --instruct-model google/gemma-4-E4B-it \
-  --cpt-model outputs/cpt_main/final \
-  --alpha 0.6 0.8 1.0 1.2 \
-  --method dare_ties \
-  --density 0.5 \
-  --output-dir outputs/residual_merge
+### Step 2: GCP Project Setup (One-time)
+
+```bash
+# This script creates: GCS bucket, Secret Manager secrets, enables APIs
+./infra/gcp/setup_project.sh
+
+# Verify GPU availability in your zone
+gcloud compute accelerator-types list --filter="zone:${GCP_ZONE}" | grep -E "a100|h100"
+```
+
+### Step 3: Create GPU Instance
+
+```bash
+# For pilot experiments (1x A100 80GB, Spot VM — ~$1.50/hr)
+./infra/gcp/create_instance.sh pilot
+
+# For main training (4x A100 80GB, Spot VM — ~$6/hr)
+./infra/gcp/create_instance.sh main
+```
+
+The startup script (`infra/gcp/startup_script.sh`) automatically:
+- Installs NVIDIA drivers
+- Clones this repository to `/workspace/repo`
+- Installs Python dependencies
+- Configures HF and W&B credentials from Secret Manager
+- Mounts local SSD for fast I/O
+
+### Step 4: Connect and Run
+
+```bash
+# SSH into the instance
+gcloud compute ssh gemma4-pt-br-pilot --zone=${GCP_ZONE}
+
+# Inside the VM:
+cd /workspace/repo
+
+# Run preflight checks (validates GPU, VRAM, disk, credentials)
+bash scripts/preflight.sh --config configs/train/cpt_pilot.yaml
+
+# Launch training in a tmux session (survives SSH disconnection)
+tmux new-session -s training
+gemma4pt train-cpt configs/train/cpt_pilot.yaml
+# Ctrl+B, D to detach
+
+# Or submit as background job from your local machine:
+./infra/gcp/submit_training_job.sh cpt_pilot
+```
+
+### Step 5: Monitor Training
+
+```bash
+# Re-attach to training session
+gcloud compute ssh gemma4-pt-br-pilot --zone=${GCP_ZONE} -- 'tmux attach -t training'
+
+# Check GPU utilization
+gcloud compute ssh gemma4-pt-br-pilot --zone=${GCP_ZONE} -- 'nvidia-smi'
+
+# View training logs
+gcloud compute ssh gemma4-pt-br-pilot --zone=${GCP_ZONE} -- 'tail -f /workspace/repo/outputs/cpt_pilot/train_log.jsonl'
+
+# W&B dashboard (if configured): https://wandb.ai/your-project
+```
+
+### Step 6: Run Evaluation
+
+```bash
+# After training completes:
+gemma4pt eval --config configs/eval/benchmarks.yaml
+
+# Generate results dashboard
+python3 scripts/build_dashboard.py --format markdown
+
+# Download results to local machine
+./infra/gcp/sync_checkpoints.sh download-results
+```
+
+### Step 7: Cleanup (Save Costs!)
+
+```bash
+# Sync checkpoints to GCS before stopping
+./infra/gcp/sync_checkpoints.sh upload
+
+# Stop instance (preserves disk, stops billing for compute)
+./infra/gcp/stop_and_cleanup.sh stop
+
+# Or delete everything when done
+./infra/gcp/stop_and_cleanup.sh delete
+```
+
+### Cost Estimates (Spot Pricing, us-central1)
+
+| Phase | Hardware | Duration | Estimated Cost |
+|-------|----------|----------|----------------|
+| Pilot (1 variant) | 1x A100 80GB | 24h | ~$50 |
+| Pilot (7 variants parallel) | 7x A100 | 24h | ~$350 |
+| Main CPT (20B tokens) | 4x A100 80GB | 3-5 days | ~$2,000 |
+| Main CPT (50B tokens) | 4x A100 80GB | 7-12 days | ~$5,000 |
+| Evaluation (full suite) | 1x A100 | 12-24h | ~$50-100 |
+| Residual Merge sweep | 1x A100 | 2h | ~$10 |
+| **Total recommended** | | | **$3,000–$8,000** |
+
+---
+
+## 📁 Project Structure
+
+```
+gemma4-pt-br-adaptation/
+│
+├── configs/                      # All experiment configurations (YAML)
+│   ├── data/                     #   Dataset sources, preprocessing, mixtures
+│   │   └── aurora_pt.yaml        #   Aurora-PT corpus configuration
+│   ├── model/                    #   Model architecture, quantization
+│   │   └── gemma4_e4b.yaml       #   Gemma 4 E4B model config
+│   ├── train/                    #   Training hyperparameters
+│   │   ├── cpt_pilot.yaml        #   Pilot: LoRA r=128, 5B tokens
+│   │   ├── cpt_main.yaml         #   Main: Full FT, 20-50B tokens
+│   │   ├── sft.yaml              #   Supervised fine-tuning
+│   │   ├── dpo.yaml              #   DPO preference tuning
+│   │   ├── lr_sweep.yaml         #   Learning rate sweep
+│   │   └── ablation_packing.yaml #   Packing strategy ablation
+│   └── eval/                     #   Evaluation benchmarks & settings
+│       └── benchmarks.yaml       #   Full benchmark suite configuration
+│
+├── src/                          # Source code
+│   ├── cli.py                    #   CLI entry point (typer-based)
+│   ├── preflight.py              #   Environment validation module
+│   ├── data/                     #   Data pipeline
+│   │   ├── aurora_loader.py      #     Load, preprocess, pack sequences
+│   │   ├── tokenizer_audit.py    #     Tokenizer fertility analysis
+│   │   ├── contamination_checks.py #   Train↔Eval overlap detection
+│   │   ├── replay_mix_builder.py #     English/code replay mixing
+│   │   └── instruction_data_builder.py # SFT data formatting
+│   ├── train/                    #   Training pipeline
+│   │   ├── cpt_trainer.py        #     Continued pre-training orchestrator
+│   │   ├── sft_trainer.py        #     Supervised fine-tuning trainer
+│   │   ├── dpo_trainer.py        #     DPO preference training
+│   │   ├── residual_merge.py     #     Task arithmetic model merging
+│   │   └── callbacks.py          #     Monitoring & GCS sync callbacks
+│   ├── eval/                     #   Evaluation pipeline
+│   │   ├── benchmark_runner.py   #     Unified benchmark execution
+│   │   ├── prompt_templates.py   #     Gemma 4 format prompts
+│   │   ├── metrics.py            #     Accuracy, F1, ROUGE-L, STS
+│   │   ├── bootstrap_ci.py       #     Statistical confidence intervals
+│   │   ├── report_builder.py     #     Tables, plots, summaries
+│   │   └── tasks/                #     Per-benchmark data loaders
+│   │       └── base_task.py      #       Abstract task interface
+│   └── utils/                    #   Shared utilities
+│       ├── config_utils.py       #     YAML loading & resolution
+│       ├── hf_utils.py           #     Model/tokenizer loading + VRAM estimation
+│       ├── logging_utils.py      #     Structured logging (console + JSONL)
+│       ├── seed.py               #     Reproducibility (all RNGs)
+│       └── checkpointing.py      #     Checkpoint management
+│
+├── tests/                        # Test suite (216 tests)
+│   ├── test_integration_pipeline.py  # End-to-end pipeline tests
+│   ├── test_gemma4_compliance.py     # Gemma 4 format compliance
+│   ├── test_golden.py                # Deterministic fixture tests
+│   ├── test_bootstrap.py            # Statistical method tests
+│   ├── test_contamination.py        # Contamination detection tests
+│   └── fixtures/                     # Test data & golden outputs
+│
+├── scripts/                      # Operational scripts
+│   ├── preflight.sh              #   Pre-training environment validation
+│   ├── build_dashboard.py        #   Results visualization
+│   ├── run_data_qc.sh            #   Data quality checks
+│   ├── run_tokenizer_audit.sh    #   Tokenizer fertility audit
+│   └── run_contamination_checks.sh # Benchmark contamination checks
+│
+├── infra/gcp/                    # GCP infrastructure automation
+│   ├── QUICKSTART.md             #   GCP deployment guide
+│   ├── ENV_TEMPLATE.sh           #   Environment variables template
+│   ├── create_instance.sh        #   Create GPU VMs (pilot/main/large)
+│   ├── startup_script.sh         #   VM auto-setup on boot
+│   ├── setup_project.sh          #   One-time GCP project setup
+│   ├── submit_training_job.sh    #   Submit training as background job
+│   ├── sync_checkpoints.sh       #   GCS checkpoint sync
+│   └── stop_and_cleanup.sh       #   Cost management & cleanup
+│
+├── docs/                         # Technical documentation
+│   ├── ARCHITECTURE.md           #   System design & decisions
+│   ├── TRAINING_GUIDE.md         #   Training stages guide
+│   ├── DATA_PIPELINE.md          #   Data processing pipeline
+│   ├── EVAL_PROTOCOL.md          #   Evaluation methodology
+│   ├── EXPERIMENT_PLAN.md        #   11-step experiment protocol
+│   ├── GEMMA4_COMPLIANCE.md      #   Gemma 4 format compliance
+│   ├── CPT_BEST_PRACTICES_RESEARCH.md # Literature review
+│   ├── experiment_card_template.md    # Experiment documentation template
+│   └── CONTRIBUTING.md           #   Contribution guidelines
+│
+├── reports/                      # Generated reports & results
+│   ├── TECHNICAL_REPORT.md       #   Technical report
+│   ├── pretrain_readiness_report.md # Pre-training readiness
+│   ├── dashboard.md              #   Results dashboard
+│   └── test_matrix.md            #   Test coverage matrix
+│
+├── pyproject.toml                # Package configuration
+├── requirements.txt              # Core dependencies
+└── EXECUTIVE_SUMMARY.md          # Executive project summary
 ```
 
 ---
 
-## 📚 Documentation
+## 🔄 Pipeline Stages
 
-Deep operational guides are located in the `docs/` folder:
-| Document | Content |
-|----------|---------|
-| `docs/GEMMA4_COMPLIANCE.md` | Conformidade Gemma 4, thinking, multi-turn |
-| `docs/TRAIN_READY.md` | Checklist de prontidão para treino |
-| `docs/EVAL_PROTOCOL.md` | Protocolo de avaliação, métricas, CI |
-| `docs/SMOKE_TESTS.md` | Smoke tests e validação |
-| `docs/EXPERIMENT_PLAN.md` | Plano experimental 11 passos |
-| `docs/ARCHITECTURE.md` | Design do sistema |
-| `docs/DATA_PIPELINE.md` | Pipeline de dados |
-| `docs/TRAINING_GUIDE.md` | Guia de treinamento |
+The project implements a 4-stage pipeline, each independently executable:
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  STAGE 1     │    │  STAGE 2     │    │  STAGE 3     │    │  STAGE 4     │
+│  DATA PREP   │───▶│  TRAINING    │───▶│  MERGE/SFT   │───▶│  EVALUATION  │
+│              │    │              │    │              │    │              │
+│ • Load corpus│    │ • CPT (LoRA) │    │ • Residual   │    │ • 20+ bench  │
+│ • Filter/QC  │    │ • CPT (Full) │    │   Merge      │    │ • Bootstrap  │
+│ • Pack seqs  │    │ • Monitor    │    │ • Alpha sweep│    │ • Reports    │
+│ • Mix replay │    │ • Checkpoint │    │ • SFT (alt)  │    │ • Dashboard  │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+### Stage 1: Data Preparation
+
+```bash
+# Quality checks on Aurora-PT corpus
+bash scripts/run_data_qc.sh
+
+# Tokenizer fertility audit (how many Gemma 4 tokens per Portuguese word)
+bash scripts/run_tokenizer_audit.sh
+
+# Check for train↔eval data contamination
+bash scripts/run_contamination_checks.sh
+```
+
+**Key features:**
+- Document-level splitting (no cross-document leakage)
+- EOS separators between packed documents
+- Cross-document label masking (optional)
+- Curriculum sort (shorter docs first, optional)
+- English replay mixing (configurable 5-20%)
+
+### Stage 2: Training
+
+```bash
+# Pilot: LoRA r=128 on 1x A100, ~24h
+gemma4pt train-cpt configs/train/cpt_pilot.yaml
+
+# Main: Full fine-tune on 4x A100, 3-7 days
+gemma4pt train-cpt configs/train/cpt_main.yaml
+```
+
+**Key features:**
+- Automatic checkpoint sync to GCS (survives Spot preemption)
+- English perplexity monitoring (forgetting detection)
+- DeepSpeed ZeRO-2/3 for multi-GPU
+- Gradient checkpointing (~40% VRAM savings)
+- Automatic resume from latest checkpoint
+
+### Stage 3: Instruction Recovery
+
+```bash
+# Option A: Residual Merge (training-free, fast)
+python3 -m src.train.residual_merge \
+    --base-model google/gemma-4-E4B \
+    --instruct-model google/gemma-4-E4B-it \
+    --cpt-model outputs/cpt_pilot/final \
+    --alpha 0.5 0.7 0.8 0.9 1.0
+
+# Option B: SFT (requires instruction dataset)
+gemma4pt train-sft configs/train/sft.yaml
+```
+
+### Stage 4: Evaluation
+
+```bash
+# Run full benchmark suite
+gemma4pt eval --config configs/eval/benchmarks.yaml
+
+# Generate comparison dashboard
+python3 scripts/build_dashboard.py --format markdown
+
+# Generate full report with figures
+python3 -m src.eval.report_builder
+```
 
 ---
 
-## 📊 Evaluation Benchmarks
+## ⚙️ Configuration System
 
-We utilize a layered evaluation suite to prevent saturation on easy or highly-translated English benchmarks. All models are evaluated generatively (`temperature=0.0`).
+All experiments are driven by YAML configurations with automatic resolution:
 
-| Benchmark | Domain | Metric | 
-|-----------|--------|--------|
-| **ENEM** | Education (National Exam) | Approval Rate |
-| **BluEx** | Education (University Entrance) | Approval Rate |
-| **OAB-Bench** | Legal (Bar Exam) | Approval Rate |
-| **ASSIN2-RTE** | NLI (Textual Entailment) | macro-F1 |
-| **ASSIN2-STS** | Semantic Similarity | Pearson r / Spearman ρ |
-| **HateBR** | Hate Speech Detection | macro-F1 |
-| **TweetSentBR** | Sentiment Analysis | macro-F1 |
-| **COPA-PT** | Causal Reasoning | Accuracy |
-| **BRoverbs** | Cultural (Proverb Completion) | Accuracy |
-| **MRPC-PT** | Paraphrase Detection | macro-F1 |
-| **RTE-PT** | Textual Entailment | Accuracy |
-| **DoNotAnswer-PT** | Safety / Refusal | Refusal Rate |
-| **TugueSICE-PT** | Language Understanding | Accuracy |
-| **XLSum-PT** | Long-context Summarization | ROUGE (opt) / Gen |
+```yaml
+# configs/train/cpt_pilot.yaml
+experiment:
+  name: "cpt_pilot_e4b_lora"
+  seed: 42
+
+model_config: "configs/model/gemma4_e4b.yaml"   # Auto-resolved to dict
+data_config: "configs/data/aurora_pt.yaml"       # Auto-resolved to dict
+
+training:
+  use_lora: true
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 16
+  # Effective batch: 2 × 16 × 8192 = ~262K tokens/step
+
+lora:
+  r: 128           # Research-backed: Biderman 2024 recommends r=128+ for CPT
+  lora_alpha: 256
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+```
+
+**Features:**
+- Nested config references auto-resolve (string paths → loaded dicts)
+- CLI overrides: `--override training.learning_rate=1e-5`
+- Deep merging: override only specific nested keys
 
 ---
 
-## 📁 Repository Architecture
+## 📊 Evaluation Suite
 
+### 20+ Benchmarks Across 6 Groups
+
+| Group | Benchmarks | What it measures |
+|-------|-----------|-----------------|
+| **Brasil Geral** | ENEM 2022/23/24, BLUEX | General knowledge in Portuguese |
+| **Semântica** | ASSIN2-RTE, ASSIN2-STS, CoPA-PT, MRPC-PT, RTE-PT | Language understanding |
+| **Classificação** | HateBR, TweetSentBR | Text classification |
+| **Jurídico** | OAB-Bench, LegalBench-BR, LeNER-Br | Legal domain |
+| **Cultura** | BRoverbs, CAPITU | Brazilian cultural knowledge |
+| **Retenção EN** | MMLU, HellaSwag, ARC | English capability retention |
+| **Segurança** | DoNotAnswer-PT | Safety alignment |
+
+### Statistical Rigor
+
+- **Bootstrap CI**: 10,000 resamples, BCa method, 95% confidence intervals
+- **Paired tests**: Same questions compared across models
+- **Correction**: Holm-Bonferroni for multiple comparisons
+- **Dual scoring**: Generation (primary) + logprob (secondary)
+- **Think mode**: Evaluated with `think_on` and `think_off` for all reasoning tasks
+
+---
+
+## 💻 CLI Reference
+
+```bash
+gemma4pt --help                    # Show all commands
+
+# Environment & Validation
+gemma4pt preflight                 # Validate GPU, VRAM, credentials, configs
+gemma4pt smoke                     # Quick E2E sanity check (CPU-safe)
+gemma4pt data-validate             # Validate data pipeline
+gemma4pt contamination-check       # Check train↔eval contamination
+gemma4pt tokenizer-audit           # Report tokenizer fertility
+
+# Training
+gemma4pt train-cpt CONFIG          # Continued Pre-Training
+gemma4pt train-sft CONFIG          # Supervised Fine-Tuning
+gemma4pt merge                     # Residual merge with alpha sweep
+
+# Evaluation & Reporting
+gemma4pt eval                      # Run benchmark suite
+gemma4pt report                    # Generate reports and figures
+gemma4pt manifest                  # Save reproducibility manifest
+
+# Meta
+gemma4pt run-all                   # Full pipeline (data → train → eval → report)
 ```
-.
-├── ablations/                 # Automated hypothesis test outputs
-├── configs/                   # YAML configurations for CPT, SFT, DPO, Merge, Eval
-├── src/                       # CLI, Preflight, Data, Train, Eval, Utils
-├── docs/                      # Extensive operational guides
-├── tests/                     # 198+ Unit, integration, smoke, and golden tests
-├── scripts/                   # Legacy end-to-end bash execution scripts
-└── reports/                   # Markdown generation (summary.md, findings_for_paper.md)
+
+**Global flags:** `--dry-run`, `--tiny` (minimal data), `--cpu-only`
+
+---
+
+## 🧪 Testing
+
+```bash
+# Full suite (216 tests, ~3s, no GPU required)
+pytest tests/ -q
+
+# By category
+pytest tests/test_integration_pipeline.py -v    # Pipeline wiring
+pytest tests/test_gemma4_compliance.py -v       # Gemma 4 format
+pytest tests/test_golden.py -v                  # Deterministic fixtures
+pytest tests/test_bootstrap.py -v               # Statistical methods
+pytest tests/test_contamination.py -v           # Contamination detection
+pytest tests/test_metrics.py -v                 # Evaluation metrics
+pytest tests/test_data_pipeline.py -v           # Data processing
+
+# Smoke test (13 checks, validates all components)
+gemma4pt smoke
 ```
-## 📝 Requirements
-- Python ≥ 3.10
-- HuggingFace account with access to `google/gemma-4` variants and `Itau-Unibanco/Aurora-PT`.
 
-## 🤝 Contributing
-Contributions are welcome! Please run `gemma4pt preflight` and ensure `pytest` and `ruff check` pass before submitting a Pull Request. Check out the issues tab for open tasks.
+**Test philosophy:** All tests run on CPU in <3s. No GPU, no network, no HuggingFace Hub calls. Tests validate logic, not model quality.
 
-## 📜 License
-Apache 2.0
+---
 
-## 📖 Citation
-If you use this repository or methodology in your academic work, please cite it as:
+## 🤖 Models & Baselines
+
+### Target Models
+
+| Role | Model ID | Parameters |
+|------|----------|-----------|
+| Pilot base | `google/gemma-4-E4B` | ~4B active |
+| Pilot instruct | `google/gemma-4-E4B-it` | ~4B active |
+| Scale base | `google/gemma-4-26B-A4B` | ~4B active (MoE) |
+| Scale instruct | `google/gemma-4-26B-A4B-it` | ~4B active (MoE) |
+
+### External Baselines
+
+| Model | Description |
+|-------|-------------|
+| `CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it` | Previous Portuguese adaptation |
+| `maritaca-ai/sabia-7b` | Maritaca AI's Portuguese model |
+| Tucano 2 Instruct | PUCRS Portuguese model |
+
+> ⚠️ **Important**: Verify actual model IDs on HuggingFace before launching training. Gemma 4 naming may differ from what's listed here. Run: `python3 -c "from huggingface_hub import HfApi; [print(m.id) for m in HfApi().list_models(search='gemma-4', author='google')]"`
+
+---
+
+## 📚 Research Background
+
+This project's methodology is informed by recent research:
+
+| Paper | Key Insight Applied |
+|-------|-------------------|
+| Biderman et al. (2024) "LoRA Learns Less and Forgets Less" | LoRA r=128+ for CPT (r=64 recovers only ~80%) |
+| Ibrahim et al. (2024) "Simple Strategies for CPT" | 5-10% replay sufficient for forgetting prevention |
+| Sabiá (Maritaca, 2023) | 7B tokens on LLaMA-7B → +20% on ENEM |
+| Tucano (PUCRS, 2024) | Data quality > quantity; heavy dedup crucial |
+| Ilharco et al. (2023) "Task Arithmetic" | Residual merge with α=0.5-1.0 for CPT |
+| Yadav et al. (2023) "TIES-Merging" | k=20%, α=0.5 when combining multiple vectors |
+
+**Full literature review:** [`docs/CPT_BEST_PRACTICES_RESEARCH.md`](docs/CPT_BEST_PRACTICES_RESEARCH.md)
+
+---
+
+## 🔬 Reproducibility
+
+Every experiment is fully reproducible:
+
+- **Fixed seeds**: Default 42 (configurable), deterministic ops enabled
+- **Versioned configs**: All hyperparameters in committed YAML files
+- **Run manifests**: Git SHA, package versions, resolved configs saved per run
+- **Inference caching**: Eval results cached by MD5(model + benchmark + seed)
+- **Bootstrap CI**: 95% confidence intervals, not just point estimates
+- **Document-level splits**: Content hash → deterministic train/val assignment
+- **Experiment cards**: Template at [`docs/experiment_card_template.md`](docs/experiment_card_template.md)
+
+---
+
+## 📖 Documentation Map
+
+| Document | What you'll find |
+|----------|-----------------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, module responsibilities, design decisions |
+| [`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md) | Training stages (CPT → Merge → SFT → DPO), hardware, monitoring |
+| [`docs/DATA_PIPELINE.md`](docs/DATA_PIPELINE.md) | Data loading, preprocessing, packing, replay mixing |
+| [`docs/EVAL_PROTOCOL.md`](docs/EVAL_PROTOCOL.md) | Evaluation methodology, scoring modes, statistical tests |
+| [`docs/EXPERIMENT_PLAN.md`](docs/EXPERIMENT_PLAN.md) | 11-step experimental protocol with acceptance criteria |
+| [`docs/GEMMA4_COMPLIANCE.md`](docs/GEMMA4_COMPLIANCE.md) | Gemma 4 chat template, think mode, multi-turn format |
+| [`docs/CPT_BEST_PRACTICES_RESEARCH.md`](docs/CPT_BEST_PRACTICES_RESEARCH.md) | Literature review (20+ papers) |
+| [`infra/gcp/QUICKSTART.md`](infra/gcp/QUICKSTART.md) | GCP deployment guide with cost estimates |
+| [`reports/TECHNICAL_REPORT.md`](reports/TECHNICAL_REPORT.md) | Technical report with methodology |
+
+---
+
+## 🖥️ Hardware Requirements
+
+| Task | Minimum | Recommended |
+|------|---------|-------------|
+| Tests, smoke, preflight | CPU only | Any machine |
+| CPT Pilot (E4B, LoRA) | 1× A100 40GB | 1× A100 80GB |
+| CPT Main (26B, Full FT) | 4× A100 80GB | 4× A100 80GB (ZeRO-2) |
+| Evaluation | 1× A100 40GB | 1× A100 80GB |
+| Residual Merge | CPU (64GB RAM) | CPU (128GB RAM) |
+| Full pipeline | 1× A100 80GB | 4× A100 80GB |
+
+**VRAM estimation** is built-in:
+```bash
+bash scripts/preflight.sh --config configs/train/cpt_pilot.yaml
+# Output: Model 8.0 GB + Optimizer 0.5 GB + Activations 2.8 GB = ~11.7 GB total
+```
+
+---
+
+## 🔧 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `flash-attn not installed` | Automatic fallback to SDPA (PyTorch native). Or: `pip install flash-attn` |
+| OOM during training | Reduce `per_device_train_batch_size` or enable gradient checkpointing |
+| Spot VM preempted | Checkpoints auto-sync to GCS every 200 steps. Just restart the VM. |
+| `model_config is required` | Ensure your training config has `model_config: "configs/model/..."` |
+| HF gated model access denied | Run `huggingface-cli login` with token that has Gemma access |
+| Tests fail with `ModuleNotFoundError` | Run `pip install -e ".[dev]"` from project root |
+| NaN in loss | Reduce learning rate, check data quality, disable tf32 |
+| Slow data loading | Increase `dataloader_num_workers` (4-8 for A100) |
+
+---
+
+## 📄 License
+
+Apache 2.0 — See LICENSE file.
+
+---
+
+## Citation
+
+If you use this work, please cite:
+
 ```bibtex
-@software{gemma4ptbr2026,
-  author = {Caridá, Vinícius and Team},
-  title = {Adapting Gemma 4 to Brazilian Portuguese},
-  year = {2026},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\\url{https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese}}
+@software{carida2025gemma4ptbr,
+  title={Adapting Gemma 4 to Brazilian Portuguese},
+  author={Caridá, Vinícius F.},
+  year={2025},
+  url={https://github.com/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese}
 }
 ```

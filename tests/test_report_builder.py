@@ -1,17 +1,16 @@
 """Tests for report builder module."""
 
+import pytest
 import sys
 import tempfile
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 pytest.importorskip("pandas")
 pytest.importorskip("numpy")
 
-from src.eval.report_builder import BENCHMARK_GROUPS, ReportBuilder, build_findings_for_paper
+from src.eval.report_builder import ReportBuilder, BENCHMARK_GROUPS, build_findings_for_paper
 
 
 def make_sample_results():
@@ -88,14 +87,8 @@ class TestBenchmarkGroups:
     """Test the benchmark group structure."""
 
     def test_all_groups_defined(self):
-        expected_groups = [
-            "brasil_geral",
-            "semantica",
-            "classificacao_social",
-            "juridico",
-            "cultura",
-            "seguranca",
-        ]
+        expected_groups = ["brasil_geral", "semantica", "classificacao_social",
+                          "juridico", "cultura", "seguranca"]
         for group in expected_groups:
             assert group in BENCHMARK_GROUPS
 
@@ -155,7 +148,6 @@ class TestReportBuilder:
             assert best_path.exists()
 
             import pandas as pd
-
             best = pd.read_csv(best_path)
             # CPT model should win all benchmarks in this sample
             assert all(best["model"] == "gemma-4-E4B-cpt")

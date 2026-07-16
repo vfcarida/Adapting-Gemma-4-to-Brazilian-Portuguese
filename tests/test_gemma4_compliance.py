@@ -9,25 +9,30 @@ Cobre:
 - Diferenciação text-only/IT/thinking/multimodal
 """
 
+import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.prompt_builders import (
-    GEMMA4_END_OF_TURN,
-    GEMMA4_START_OF_TURN,
-    GEMMA4_THINK_CLOSE,
-    GEMMA4_THINK_OPEN,
-    BaselinePromptBuilder,
     Gemma4PromptBuilder,
+    BaselinePromptBuilder,
+    GEMMA4_START_OF_TURN,
+    GEMMA4_END_OF_TURN,
+    GEMMA4_THINK_OPEN,
+    GEMMA4_THINK_CLOSE,
+    GEMMA4_ROLE_MODEL,
+    GEMMA4_ROLE_USER,
 )
 from src.eval.prompt_templates import (
     PromptBuilder,
-    _wrap_gemma4_legacy,
-    extract_thought,
     strip_thought,
+    extract_thought,
+    _wrap_gemma4_legacy,
+    get_prompt_template,
 )
+
 
 # =============================================================================
 # Fixtures
@@ -36,14 +41,15 @@ from src.eval.prompt_templates import (
 
 class MockTokenizerNoChat:
     """Tokenizer sem chat template."""
-
     pass
 
 
 class MockTokenizerWithChat:
     """Tokenizer com apply_chat_template funcional."""
 
-    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, **kwargs):
+    def apply_chat_template(
+        self, messages, tokenize=False, add_generation_prompt=False, **kwargs
+    ):
         parts = []
         for msg in messages:
             role = msg["role"]

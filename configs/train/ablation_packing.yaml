@@ -1,0 +1,101 @@
+# =============================================================================
+# Ablation: Packing Strategies
+# =============================================================================
+# Compare the effect of EOS separators, label masking, and curriculum sorting
+# on CPT quality. Run as Group F in the ablation matrix.
+#
+# Usage:
+#   # F1: Baseline (no EOS, no masking) — legacy behavior
+#   python3 -m src.train.cpt_trainer --config configs/train/ablation_packing.yaml \
+#       --override experiment.name=F1_no_eos packing.eos_separator=false
+#
+#   # F2: EOS separator only (default after Phase 3)
+#   python3 -m src.train.cpt_trainer --config configs/train/ablation_packing.yaml \
+#       --override experiment.name=F2_eos_only
+#
+#   # F3: EOS + label masking at boundaries
+#   python3 -m src.train.cpt_trainer --config configs/train/ablation_packing.yaml \
+#       --override experiment.name=F3_eos_mask packing.mask_cross_doc_labels=true
+#
+#   # F4: EOS + curriculum sort (shorter docs first)
+#   python3 -m src.train.cpt_trainer --config configs/train/ablation_packing.yaml \
+#       --override experiment.name=F4_eos_curriculum data.curriculum_sort=true
+#
+#   # F5: Full (EOS + mask + curriculum)
+#   python3 -m src.train.cpt_trainer --config configs/train/ablation_packing.yaml \
+#       --override experiment.name=F5_full packing.mask_cross_doc_labels=true data.curriculum_sort=true
+#
+# Hardware: 1x A100 80GB (same as pilot)
+# Duration: ~4h per run (1000 steps × 5 configs = ~20h total)
+# =============================================================================
+
+experiment:
+  name: "F2_eos_only"
+  description: "Packing ablation: EOS separator between documents"
+  seed: 42
+  trilha: "ablation_packing"
+
+model_config: "configs/model/gemma4_e4b.yaml"
+data_config: "configs/data/aurora_pt.yaml"
+data_mixture: "pt_en_15"
+
+# Short runs to compare convergence speed and final loss
+training:
+  method: "cpt"
+  peft_method: "lora"
+  use_lora: true
+  max_steps: 1000
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  task_type: "CAUSAL_LM"
+  bias: "none"
+
+# Packing options (the variables being ablated)
+packing:
+  enabled: true
+  eos_separator: true  # Insert EOS between documents (F1 sets false)
+  mask_cross_doc_labels: false  # F3/F5 sets true
+
+# Data options
+data:
+  curriculum_sort: false  # F4/F5 sets true
+
+checkpointing:
+  save_steps: 250
+  save_total_limit: 3
+  resume_from_checkpoint: null
+
+logging:
+  log_level: "info"
+  logging_steps: 10
+  report_to: ["tensorboard", "wandb"]
+  log_file: "outputs/ablations/packing/train_log.jsonl"
+
+evaluation:
+  eval_steps: 250
+  eval_strategy: "steps"
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+
+output:
+  output_dir: "outputs/ablations/packing"
+  overwrite_output_dir: false

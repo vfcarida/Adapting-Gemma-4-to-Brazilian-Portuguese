@@ -4,6 +4,7 @@ Note: These tests import only the pure-Python formatting functions,
 not the dataset loading code (which requires the `datasets` library).
 """
 
+import pytest
 import sys
 from pathlib import Path
 
@@ -30,9 +31,7 @@ def format_gemma4_chat(messages, add_generation_prompt=False, use_think=False):
             formatted += f"{GEMMA4_USER_PREFIX}{content}{GEMMA4_USER_SUFFIX}"
         elif role in ("model", "assistant"):
             if use_think:
-                formatted += (
-                    f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
-                )
+                formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
             else:
                 formatted += f"{GEMMA4_MODEL_PREFIX}{content}{GEMMA4_MODEL_SUFFIX}"
     if add_generation_prompt:
@@ -76,7 +75,9 @@ class TestFormatGemma4Chat:
 
     def test_generation_prompt_with_think(self):
         messages = [{"role": "user", "content": "Hello"}]
-        result = format_gemma4_chat(messages, add_generation_prompt=True, use_think=True)
+        result = format_gemma4_chat(
+            messages, add_generation_prompt=True, use_think=True
+        )
         assert result.endswith("<start_of_turn>model\n<think>\n")
 
     def test_think_mode_wraps_response(self):
@@ -143,12 +144,8 @@ class TestChatTemplateConstants:
         assert GEMMA4_MODEL_SUFFIX == "<end_of_turn>\n"
 
     def test_no_trailing_spaces(self):
-        for token in [
-            GEMMA4_USER_PREFIX,
-            GEMMA4_USER_SUFFIX,
-            GEMMA4_MODEL_PREFIX,
-            GEMMA4_MODEL_SUFFIX,
-        ]:
+        for token in [GEMMA4_USER_PREFIX, GEMMA4_USER_SUFFIX,
+                      GEMMA4_MODEL_PREFIX, GEMMA4_MODEL_SUFFIX]:
             assert not token.endswith(" ")
 
 
@@ -165,7 +162,7 @@ class TestMaskingLogic:
         template_len = len(response_template_ids)
         found_positions = []
         for i in range(len(input_ids) - template_len + 1):
-            if input_ids[i : i + template_len] == response_template_ids:
+            if input_ids[i: i + template_len] == response_template_ids:
                 found_positions.append(i + template_len)
 
         assert len(found_positions) == 1
@@ -182,7 +179,7 @@ class TestMaskingLogic:
         template_len = len(response_template_ids)
 
         for i in range(len(input_ids) - template_len + 1):
-            if input_ids[i : i + template_len] == response_template_ids:
+            if input_ids[i: i + template_len] == response_template_ids:
                 start = i + template_len
                 for j in range(start, len(input_ids)):
                     masked_labels[j] = input_ids[j]

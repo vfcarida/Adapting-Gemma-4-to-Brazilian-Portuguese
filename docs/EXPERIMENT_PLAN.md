@@ -60,13 +60,13 @@ bash scripts/run_cpt_pilot.sh
 **Variantes a testar em paralelo (se GPUs disponíveis):**
 | ID | Método | Replay |
 |----|--------|--------|
-| B1 | LoRA r=64 | 15% EN |
-| B2 | DoRA r=64 | 15% EN |
-| B3 | QLoRA r=64 | 15% EN |
-| C1 | LoRA r=64 | 0% (PT only) |
-| C2 | LoRA r=64 | 5% EN |
-| C3 | LoRA r=64 | 10% EN |
-| C4 | LoRA r=64 | 15% EN |
+| B1 | LoRA r=128 | 15% EN |
+| B2 | DoRA r=128 | 15% EN |
+| B3 | QLoRA r=128 | 15% EN |
+| C1 | LoRA r=128 | 0% (PT only) |
+| C2 | LoRA r=128 | 5% EN |
+| C3 | LoRA r=128 | 10% EN |
+| C4 | LoRA r=128 | 15% EN |
 
 **Critério de aceite:** Perplexidade decrescente. Nenhum NaN/Inf nos gradientes.
 

@@ -70,7 +70,8 @@ class BenchmarkRunner:
         """Run all enabled benchmarks for a single model.
 
         Evaluates in both think_on and think_off modes (if configured),
-        using cache to skip already-computed benchmarks.
+        using cache to skip already-computed benchmarks. Loads the model
+        once and reuses it across all benchmarks for efficiency.
 
         Args:
             model_id: HuggingFace model ID or local path.
@@ -79,103 +80,66 @@ class BenchmarkRunner:
         Returns:
             Dict with model metadata and nested benchmark results.
         """
-        import gc
         set_seed(self.seed)
         benchmarks = self.config.get("benchmarks", {})
         results = {"model_id": model_id, "model_name": model_name, "benchmarks": {}}
 
-        # Check if we actually need to run any fresh benchmarks
-        any_fresh = False
+        # Check if any benchmarks need fresh inference (not cached)
+        needs_inference = False
         for think_mode in self.think_modes:
             for bench_name, bench_cfg in benchmarks.items():
                 if not bench_cfg.get("enabled", True):
                     continue
                 cache_key = self._cache_key(model_id, bench_name, think_mode)
                 if not self._load_cache(cache_key):
-                    any_fresh = True
+                    needs_inference = True
                     break
-            if any_fresh:
+            if needs_inference:
                 break
 
-        loaded_model = None
-        loaded_tokenizer = None
-        is_actually_using_vllm = False
+        # Load model once for all benchmarks (avoid repeated loading)
+        model_resources = None
+        if needs_inference and not self.use_vllm:
+            model_resources = self._load_model(model_id)
 
-        if any_fresh:
-            if self.use_vllm:
-                try:
-                    from vllm import LLM
-                    logger.info(f"Initializing vLLM engine for model: {model_id}...")
-                    loaded_model = LLM(
-                        model=model_id,
-                        dtype="bfloat16",
-                        trust_remote_code=True,
-                        max_model_len=8192,
-                    )
-                    is_actually_using_vllm = True
-                except ImportError:
-                    logger.warning("vLLM not available, falling back to HF inference")
+        for think_mode in self.think_modes:
+            mode_key = f"think_{think_mode}"
+            results["benchmarks"][mode_key] = {}
 
-            if not is_actually_using_vllm:
-                logger.info(f"Loading HF model and tokenizer for: {model_id}...")
-                loaded_tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-                loaded_model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
-                    torch_dtype=torch.bfloat16,
-                    device_map="auto",
-                    trust_remote_code=True,
+            for bench_name, bench_cfg in benchmarks.items():
+                if not bench_cfg.get("enabled", True):
+                    continue
+
+                logger.info(f"Running {bench_name} (think={think_mode}) on {model_name}")
+
+                # Check cache first (avoids re-running expensive inference)
+                cache_key = self._cache_key(model_id, bench_name, think_mode)
+                cached = self._load_cache(cache_key)
+                if cached:
+                    logger.info(f"  Using cached result for {bench_name}")
+                    results["benchmarks"][mode_key][bench_name] = cached
+                    continue
+
+                # Run the benchmark fresh
+                bench_result = self._run_single_benchmark(
+                    model_id, bench_name, bench_cfg, think_mode,
+                    model_resources=model_resources,
                 )
-                loaded_model.eval()
+                results["benchmarks"][mode_key][bench_name] = bench_result
 
-        try:
-            for think_mode in self.think_modes:
-                mode_key = f"think_{think_mode}"
-                results["benchmarks"][mode_key] = {}
+                # Persist to cache
+                self._save_cache(cache_key, bench_result)
 
-                for bench_name, bench_cfg in benchmarks.items():
-                    if not bench_cfg.get("enabled", True):
-                        continue
-
-                    logger.info(f"Running {bench_name} (think={think_mode}) on {model_name}")
-
-                    # Check cache first (avoids re-running expensive inference)
-                    cache_key = self._cache_key(model_id, bench_name, think_mode)
-                    cached = self._load_cache(cache_key)
-                    if cached:
-                        logger.info(f"  Using cached result for {bench_name}")
-                        results["benchmarks"][mode_key][bench_name] = cached
-                        continue
-
-                    # Run the benchmark fresh
-                    bench_result = self._run_single_benchmark(
-                        model_id=model_id,
-                        bench_name=bench_name,
-                        bench_cfg=bench_cfg,
-                        think_mode=think_mode,
-                        loaded_model=loaded_model,
-                        loaded_tokenizer=loaded_tokenizer,
-                        use_vllm=is_actually_using_vllm
-                    )
-                    results["benchmarks"][mode_key][bench_name] = bench_result
-
-                    # Persist to cache
-                    self._save_cache(cache_key, bench_result)
-        finally:
-            if loaded_model is not None:
-                logger.info("Unloading model resources...")
-                del loaded_model
-            if loaded_tokenizer is not None:
-                del loaded_tokenizer
-            if any_fresh:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+        # Free model after all benchmarks for this model
+        if model_resources:
+            del model_resources
+            torch.cuda.empty_cache()
 
         return results
 
     def _run_single_benchmark(
         self, model_id: str, bench_name: str, bench_cfg: dict, think_mode: str,
-        loaded_model: Any = None, loaded_tokenizer: Any = None, use_vllm: bool = False
+        model_resources: dict | None = None,
     ) -> dict[str, Any]:
         """Run a single benchmark: load data → format prompts → inference → score.
 
@@ -184,6 +148,7 @@ class BenchmarkRunner:
             bench_name: Benchmark name (for logging).
             bench_cfg: Benchmark configuration dict.
             think_mode: "on" or "off".
+            model_resources: Pre-loaded model and tokenizer dict (optional).
 
         Returns:
             Dict with task info, metrics, timing, and sample predictions.
@@ -193,20 +158,56 @@ class BenchmarkRunner:
         # Step 1: Load task data (from HF Hub or local JSONL)
         task = load_task(bench_cfg["task"])
         examples = task.load_data(bench_cfg)
-        prompt_template = get_prompt_template(bench_cfg["task"], bench_cfg.get("num_shots", 0))
+        num_shots = bench_cfg.get("num_shots", 0)
 
-        # Step 2: Format all prompts with Gemma 4 chat template
+        # Step 2: Split few-shot examples from evaluation examples
+        # Use first N examples as few-shot demonstrations, evaluate on the rest
+        few_shot_examples = []
+        eval_examples = examples
+        if num_shots > 0 and len(examples) > num_shots + 10:
+            few_shot_examples = examples[:num_shots]
+            eval_examples = examples[num_shots:]
+
+        prompt_template = get_prompt_template(
+            bench_cfg["task"], num_shots, few_shot_examples=few_shot_examples
+        )
+
+        # Step 3: Format all prompts with Gemma 4 chat template
         prompts = []
-        for example in examples:
+        for example in eval_examples:
             prompt = prompt_template.format_prompt(example, think_mode=think_mode)
             prompts.append(prompt)
 
-        # Step 3: Run model inference (batched)
+        # Step 4: Run model inference
+        # Use logprob scoring for MCQ tasks (more stable than generate+parse)
+        use_logprob = (
+            self.config.get("evaluation", {}).get("use_logprob", False)
+            and bench_cfg.get("metric") == "accuracy"
+            and model_resources is not None
+            and think_mode == "off"  # Logprob doesn't work with thinking
+        )
+
         start_time = time.time()
-        if use_vllm:
-            predictions = self._inference_vllm(model_id, prompts, think_mode, loaded_model)
+        if use_logprob:
+            # Extract answer options for each example
+            answer_options = []
+            for ex in eval_examples:
+                options = ex.get("options", [])
+                if options:
+                    # Use letter labels (A, B, C, D, E)
+                    answer_options.append([chr(65 + i) for i in range(len(options))])
+                else:
+                    answer_options.append(["A", "B", "C", "D"])
+            predictions = self._inference_logprob(model_resources, prompts, answer_options)
+            inference_method = "logprob"
+        elif self.use_vllm:
+            predictions = self._inference_vllm(model_id, prompts, think_mode)
+            inference_method = "vllm"
         else:
-            predictions = self._inference_hf(model_id, prompts, think_mode, loaded_model, loaded_tokenizer)
+            predictions = self._inference_hf(
+                model_id, prompts, think_mode, model_resources=model_resources
+            )
+            inference_method = "generate"
         inference_time = time.time() - start_time
 
         # Step 4: Parse predictions (strip thinking, extract answer)
@@ -219,17 +220,21 @@ class BenchmarkRunner:
             parsed_predictions.append(parsed)
 
         # Step 5: Compute metrics against gold labels
-        gold_labels = [task.get_gold_label(ex) for ex in examples]
-        metrics = compute_metrics_for_task(bench_cfg["metric"], parsed_predictions, gold_labels)
+        gold_labels = [task.get_gold_label(ex) for ex in eval_examples]
+        metrics = compute_metrics_for_task(
+            bench_cfg["metric"], parsed_predictions, gold_labels
+        )
 
         result = {
             "task": bench_cfg["task"],
             "group": bench_cfg["group"],
             "metric_name": bench_cfg["metric"],
             "metrics": metrics,
-            "num_examples": len(examples),
+            "num_examples": len(eval_examples),
             "inference_time_sec": inference_time,
+            "inference_method": inference_method,
             "think_mode": think_mode,
+            "num_few_shot": num_shots,
             # Save a sample of raw predictions for qualitative analysis
             "raw_predictions": predictions[:10],
         }
@@ -237,40 +242,106 @@ class BenchmarkRunner:
         logger.info(f"  {bench_name}: {metrics}")
         return result
 
-    def _inference_hf(self, model_id: str, prompts: list[str], think_mode: str, model: Any, tokenizer: Any) -> list[str]:
+    def _load_model(self, model_id: str) -> dict[str, Any]:
+        """Load model and tokenizer once for reuse across benchmarks.
+
+        Args:
+            model_id: HuggingFace model ID or local path.
+
+        Returns:
+            Dict with 'model' and 'tokenizer' keys.
+        """
+        logger.info(f"Loading model for evaluation: {model_id}")
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        model.eval()
+        return {"model": model, "tokenizer": tokenizer}
+
+    def _inference_hf(
+        self, model_id: str, prompts: list[str], think_mode: str,
+        model_resources: dict | None = None,
+    ) -> list[str]:
         """Run inference using HuggingFace Transformers (generate API).
 
-        Uses pre-loaded model and tokenizer to process all prompts in batches.
+        Uses pre-loaded model if provided, otherwise loads on demand.
+
+        Args:
+            model_id: Model to load (HF ID or local path).
+            prompts: List of formatted prompts.
+            think_mode: Thinking mode (affects generation but not logic here).
+            model_resources: Pre-loaded model/tokenizer dict (avoids reloading).
+
+        Returns:
+            List of raw model text outputs (one per prompt).
         """
+        # Use pre-loaded model or load on demand
+        if model_resources:
+            model = model_resources["model"]
+            tokenizer = model_resources["tokenizer"]
+            should_cleanup = False
+        else:
+            resources = self._load_model(model_id)
+            model = resources["model"]
+            tokenizer = resources["tokenizer"]
+            should_cleanup = True
+
         predictions = []
         for i in tqdm(range(0, len(prompts), self.batch_size), desc="Inference"):
             batch = prompts[i : i + self.batch_size]
-            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(
-                model.device
-            )
+            inputs = tokenizer(
+                batch, return_tensors="pt", padding=True, truncation=True
+            ).to(model.device)
 
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
-                    # Temperature 0 = greedy decoding (deterministic)
                     temperature=self.temperature if self.temperature > 0 else None,
                     do_sample=self.temperature > 0,
                     pad_token_id=tokenizer.pad_token_id,
                 )
 
             for j, output in enumerate(outputs):
-                # Only decode newly generated tokens (skip the input prompt)
                 input_len = inputs["input_ids"][j].shape[0]
                 new_tokens = output[input_len:]
                 pred = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 predictions.append(pred)
 
+        # Only free if we loaded on demand
+        if should_cleanup:
+            del model
+            torch.cuda.empty_cache()
+
         return predictions
 
-    def _inference_vllm(self, model_id: str, prompts: list[str], think_mode: str, llm: Any) -> list[str]:
-        """Run inference using pre-loaded vLLM engine."""
-        from vllm import SamplingParams
+    def _inference_vllm(
+        self, model_id: str, prompts: list[str], think_mode: str
+    ) -> list[str]:
+        """Run inference using vLLM for 3-5x faster generation.
+
+        vLLM uses PagedAttention and continuous batching for efficient
+        LLM inference. Falls back to HF if vLLM is not installed.
+
+        Args:
+            model_id: Model to load.
+            prompts: List of formatted prompts.
+            think_mode: Thinking mode.
+
+        Returns:
+            List of raw model text outputs.
+        """
+        try:
+            from vllm import LLM, SamplingParams
+        except ImportError:
+            logger.warning("vLLM not available, falling back to HF inference")
+            return self._inference_hf(model_id, prompts, think_mode)
 
         sampling_params = SamplingParams(
             temperature=self.temperature,
@@ -278,8 +349,79 @@ class BenchmarkRunner:
             seed=self.seed,
         )
 
+        llm = LLM(
+            model=model_id,
+            dtype="bfloat16",
+            trust_remote_code=True,
+            max_model_len=8192,
+        )
+
         outputs = llm.generate(prompts, sampling_params)
         predictions = [o.outputs[0].text for o in outputs]
+
+        del llm
+        torch.cuda.empty_cache()
+        return predictions
+
+    def _inference_logprob(
+        self,
+        model_resources: dict[str, Any],
+        prompts: list[str],
+        answer_options: list[list[str]],
+    ) -> list[str]:
+        """Score MCQ tasks using log-probabilities instead of generation.
+
+        For each prompt, compute the log-probability of each answer option
+        (e.g., "A", "B", "C", "D") and select the highest. This is more
+        stable than generation+parsing for classification tasks.
+
+        Args:
+            model_resources: Pre-loaded model and tokenizer.
+            prompts: List of formatted prompts (ending before answer).
+            answer_options: List of lists of possible answers per example.
+                e.g., [["A", "B", "C", "D"], ["A", "B", "C", "D", "E"], ...]
+
+        Returns:
+            List of predicted answers (highest logprob option per example).
+        """
+        model = model_resources["model"]
+        tokenizer = model_resources["tokenizer"]
+        predictions = []
+
+        for prompt, options in tqdm(
+            zip(prompts, answer_options), total=len(prompts), desc="Logprob scoring"
+        ):
+            # Tokenize the prompt
+            prompt_ids = tokenizer.encode(prompt, return_tensors="pt").to(model.device)
+
+            best_option = options[0]
+            best_logprob = float("-inf")
+
+            for option in options:
+                # Tokenize the option (single token for letter answers)
+                option_ids = tokenizer.encode(option, add_special_tokens=False)
+                if not option_ids:
+                    continue
+
+                # Get logits at the position after the prompt
+                with torch.no_grad():
+                    outputs = model(prompt_ids)
+                    # Logits for the next token after the prompt
+                    next_token_logits = outputs.logits[0, -1, :]
+
+                # Log-softmax for proper probability
+                log_probs = torch.nn.functional.log_softmax(next_token_logits, dim=-1)
+
+                # Sum log-probs of all tokens in the option
+                option_logprob = sum(
+                    log_probs[tid].item() for tid in option_ids
+                ) / len(option_ids)  # Length-normalize
+
+                if option_logprob > best_logprob:
+                    best_logprob = option_logprob
+                    best_option = option
+
+            predictions.append(best_option)
 
         return predictions
 

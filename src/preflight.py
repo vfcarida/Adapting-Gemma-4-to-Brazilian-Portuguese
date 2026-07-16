@@ -6,7 +6,9 @@ CUDA, paths de configs e arquivos obrigatórios.
 
 import importlib
 import os
+import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,7 @@ REQUIRED_PACKAGES = {
     "trl": "0.12.0",
     "numpy": "1.26.0",
     "scipy": "1.12.0",
-    "pyyaml": "6.0.1",
+    "yaml": "6.0.1",  # import name for pyyaml
 }
 
 OPTIONAL_PACKAGES = {
@@ -53,14 +55,12 @@ class PreflightResult:
 
     def add(self, name: str, status: str, message: str, details: str = ""):
         """Adiciona resultado de check. status: 'ok', 'warn', 'fail'."""
-        self.checks.append(
-            {
-                "name": name,
-                "status": status,
-                "message": message,
-                "details": details,
-            }
-        )
+        self.checks.append({
+            "name": name,
+            "status": status,
+            "message": message,
+            "details": details,
+        })
 
     @property
     def passed(self) -> bool:
@@ -110,8 +110,7 @@ def check_python_version(result: PreflightResult) -> None:
         result.add("python_version", "ok", f"Python {v.major}.{v.minor}.{v.micro}")
     else:
         result.add(
-            "python_version",
-            "fail",
+            "python_version", "fail",
             f"Python {v.major}.{v.minor}.{v.micro} — requer >= 3.10",
             "Instale Python 3.10+ via pyenv ou conda",
         )
@@ -121,22 +120,19 @@ def check_required_packages(result: PreflightResult) -> None:
     """Verifica pacotes obrigatórios e versões mínimas."""
     for pkg, min_ver in REQUIRED_PACKAGES.items():
         try:
-            module_name = "yaml" if pkg == "pyyaml" else pkg
-            mod = importlib.import_module(module_name)
+            mod = importlib.import_module(pkg)
             version = getattr(mod, "__version__", "0.0.0")
             if _parse_version(version) >= _parse_version(min_ver):
                 result.add(f"pkg_{pkg}", "ok", f"{pkg}=={version}")
             else:
                 result.add(
-                    f"pkg_{pkg}",
-                    "fail",
+                    f"pkg_{pkg}", "fail",
                     f"{pkg}=={version} < {min_ver}",
                     f"pip install '{pkg}>={min_ver}'",
                 )
         except ImportError:
             result.add(
-                f"pkg_{pkg}",
-                "fail",
+                f"pkg_{pkg}", "fail",
                 f"{pkg} não instalado",
                 f"pip install '{pkg}>={min_ver}'",
             )
@@ -151,8 +147,7 @@ def check_optional_packages(result: PreflightResult) -> None:
             result.add(f"opt_{pkg}", "ok", f"{pkg}=={version} (opcional)")
         except ImportError:
             result.add(
-                f"opt_{pkg}",
-                "warn",
+                f"opt_{pkg}", "warn",
                 f"{pkg} não instalado (opcional)",
                 f"pip install '{pkg}>={min_ver}' para funcionalidades extras",
             )
@@ -162,20 +157,17 @@ def check_cuda(result: PreflightResult) -> None:
     """Verifica disponibilidade de CUDA."""
     try:
         import torch
-
         if torch.cuda.is_available():
             device_count = torch.cuda.device_count()
             device_name = torch.cuda.get_device_name(0)
             mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
             result.add(
-                "cuda",
-                "ok",
+                "cuda", "ok",
                 f"CUDA disponível: {device_count} GPU(s) — {device_name} ({mem:.1f}GB)",
             )
         else:
             result.add(
-                "cuda",
-                "warn",
+                "cuda", "warn",
                 "CUDA não disponível — apenas CPU",
                 "Treinamento requer GPU. Smoke tests e avaliação local rodam em CPU.",
             )
@@ -191,14 +183,12 @@ def check_disk_space(result: PreflightResult, min_gb: float = 50.0) -> None:
         result.add("disk_space", "ok", f"{free_gb:.1f}GB livres")
     elif free_gb >= 10.0:
         result.add(
-            "disk_space",
-            "warn",
+            "disk_space", "warn",
             f"{free_gb:.1f}GB livres (recomendado: {min_gb}GB para modelos grandes)",
         )
     else:
         result.add(
-            "disk_space",
-            "fail",
+            "disk_space", "fail",
             f"Apenas {free_gb:.1f}GB livres — insuficiente",
             "Libere espaço ou use storage externo para checkpoints.",
         )
@@ -217,8 +207,7 @@ def check_hf_auth(result: PreflightResult) -> None:
         result.add("hf_auth", "ok", "Token HF encontrado em ~/.cache/huggingface/token")
     else:
         result.add(
-            "hf_auth",
-            "warn",
+            "hf_auth", "warn",
             "Sem autenticação HF detectada",
             "Execute 'huggingface-cli login' ou defina HF_TOKEN para acessar modelos gated.",
         )
@@ -233,15 +222,10 @@ def check_required_files(result: PreflightResult, project_root: Path | None = No
             missing.append(f)
 
     if not missing:
-        result.add(
-            "required_files",
-            "ok",
-            f"Todos os {len(REQUIRED_FILES)} arquivos obrigatórios presentes",
-        )
+        result.add("required_files", "ok", f"Todos os {len(REQUIRED_FILES)} arquivos obrigatórios presentes")
     else:
         result.add(
-            "required_files",
-            "fail",
+            "required_files", "fail",
             f"{len(missing)} arquivo(s) obrigatório(s) ausente(s)",
             f"Ausentes: {', '.join(missing[:5])}",
         )
@@ -259,8 +243,7 @@ def check_write_permissions(result: PreflightResult) -> None:
             test_file.unlink()
         except PermissionError:
             result.add(
-                "write_permissions",
-                "fail",
+                "write_permissions", "fail",
                 f"Sem permissão de escrita em '{d}'",
                 f"chmod +w {d}",
             )
@@ -271,7 +254,6 @@ def check_write_permissions(result: PreflightResult) -> None:
 def check_configs_valid(result: PreflightResult, project_root: Path | None = None) -> None:
     """Valida que configs YAML são parseable e coerentes."""
     import yaml
-
     root = project_root or Path(".")
     config_dir = root / "configs"
 
@@ -291,8 +273,7 @@ def check_configs_valid(result: PreflightResult, project_root: Path | None = Non
 
     if errors:
         result.add(
-            "configs_valid",
-            "fail",
+            "configs_valid", "fail",
             f"{len(errors)} config(s) com erro de parse",
             "; ".join(errors[:3]),
         )

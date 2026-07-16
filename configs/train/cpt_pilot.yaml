@@ -47,8 +47,8 @@ training:
 
 # Configuração PEFT — LoRA padrão
 lora:
-  r: 64
-  lora_alpha: 128
+  r: 128
+  lora_alpha: 256
   lora_dropout: 0.05
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
   task_type: "CAUSAL_LM"
@@ -56,14 +56,14 @@ lora:
   # Para DoRA, adicionar: use_dora: true
 
 checkpointing:
-  save_steps: 500
+  save_steps: 200  # More frequent for GCP Spot VM safety (~20 min intervals)
   save_total_limit: 5
   resume_from_checkpoint: null
 
 logging:
   log_level: "info"
   logging_steps: 10
-  report_to: ["json", "tensorboard"]
+  report_to: ["tensorboard", "wandb"]
   log_file: "outputs/cpt_pilot/train_log.jsonl"
   tensorboard_dir: "outputs/cpt_pilot/tensorboard"
 

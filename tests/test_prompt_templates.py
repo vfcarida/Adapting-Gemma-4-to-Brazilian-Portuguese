@@ -1,19 +1,20 @@
 """Testes para formatação de templates de prompt."""
 
+import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.eval.prompt_templates import (
-    TASK_FORMATTERS,
-    TASK_INSTRUCTIONS,
-    PromptBuilder,
     TaskPromptTemplate,
-    _wrap_gemma4_legacy,
-    extract_thought,
     get_prompt_template,
+    _wrap_gemma4_legacy,
     strip_thought,
+    extract_thought,
+    PromptBuilder,
+    TASK_INSTRUCTIONS,
+    TASK_FORMATTERS,
 )
 
 
@@ -138,56 +139,22 @@ class TestTaskPromptTemplate:
 
     def test_all_tasks_have_instructions(self):
         expected_tasks = [
-            "enem",
-            "bluex",
-            "assin2_rte",
-            "assin2_sts",
-            "copa_pt",
-            "boolq_pt",
-            "mrpc_pt",
-            "rte_pt",
-            "hatebr",
-            "tweet_sentbr",
-            "oab_bench",
-            "broverbs",
-            "capitu",
-            "math_pt",
-            "lener_br",
-            "legalbench_br",
-            "publichearing_br",
-            "donotanswer_pt",
-            "xlsum_pt",
-            "mmlu_en",
-            "hellaswag_en",
-            "arc_en",
+            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
+            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
+            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
+            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
+            "mmlu_en", "hellaswag_en", "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_INSTRUCTIONS, f"Faltando instrução para {task}"
 
     def test_all_tasks_have_formatters(self):
         expected_tasks = [
-            "enem",
-            "bluex",
-            "assin2_rte",
-            "assin2_sts",
-            "copa_pt",
-            "boolq_pt",
-            "mrpc_pt",
-            "rte_pt",
-            "hatebr",
-            "tweet_sentbr",
-            "oab_bench",
-            "broverbs",
-            "capitu",
-            "math_pt",
-            "lener_br",
-            "legalbench_br",
-            "publichearing_br",
-            "donotanswer_pt",
-            "xlsum_pt",
-            "mmlu_en",
-            "hellaswag_en",
-            "arc_en",
+            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
+            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
+            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
+            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
+            "mmlu_en", "hellaswag_en", "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_FORMATTERS, f"Faltando formatador para {task}"

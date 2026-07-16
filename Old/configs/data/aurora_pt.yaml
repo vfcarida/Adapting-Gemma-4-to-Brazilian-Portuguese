@@ -1,0 +1,123 @@
+# =============================================================================
+# Configuração de Dados — Aurora-PT / NorBERTo
+# =============================================================================
+# Corpus: Aurora-PT (~331B tokens medidos em GPT-2 tokenizer)
+# NOTA: O orçamento real em tokens Gemma 4 deve ser medido via tokenizer_audit
+# pois a fertilidade pode ser diferente (tipicamente ~1.3x mais tokens para PT)
+
+dataset:
+  name: "aurora-pt"
+  hub_id: "dominguesm/aurora-pt"
+  # Alternativa: "nicholasKluge/Pt-Corpus-Instruct" para SFT
+  split_strategy: "cluster"  # Split por clusters de near-duplicates
+  val_ratio: 0.005  # 0.5% para validação
+  seed: 42
+
+# =============================================================================
+# Pipeline de Qualidade de Dados
+# =============================================================================
+quality_control:
+  enabled: true
+  manifest_path: "outputs/data_qc/quality_manifest.parquet"
+  stats_path: "outputs/data_qc/domain_stats.json"
+
+  # Filtros de tamanho
+  min_chars: 100
+  max_chars: 500000
+
+  # Detecção de idioma
+  language_id:
+    enabled: true
+    method: "stopwords"  # "stopwords" | "fasttext" (TODO: fasttext)
+    min_confidence: 0.8
+    target_language: "pt"
+
+  # Filtro de PII (dados pessoais)
+  pii_filter:
+    enabled: true
+    # Padrões: CPF, email, telefone, cartão de crédito
+    action: "flag"  # "flag" | "redact" | "remove"
+
+  # Filtro de toxicidade
+  toxicity_filter:
+    enabled: true
+    method: "keywords"  # "keywords" | "classifier" (TODO)
+    max_toxicity_score: 0.8
+    action: "flag"
+
+  # Score de qualidade mínimo (0-1)
+  min_quality_score: 0.3
+
+# =============================================================================
+# Deduplicação
+# =============================================================================
+deduplication:
+  # Dedup exata por hash
+  exact_dedup: true
+
+  # Dedup fuzzy por MinHash LSH
+  fuzzy_dedup:
+    enabled: true
+    method: "minhash"
+    threshold: 0.8
+    num_perm: 128
+
+  # Split por clusters (não por documento individual)
+  # Documentos no mesmo cluster vão para o mesmo split
+  cluster_split: true
+
+# =============================================================================
+# Misturas de Replay
+# =============================================================================
+mixtures:
+  pt_only:
+    aurora_pt: 1.0
+
+  pt_en_5:
+    aurora_pt: 0.95
+    english_replay: 0.05
+
+  pt_en_10:
+    aurora_pt: 0.90
+    english_replay: 0.10
+
+  pt_en_15:
+    aurora_pt: 0.85
+    english_replay: 0.15
+
+  pt_en_code:
+    aurora_pt: 0.80
+    english_replay: 0.12
+    code: 0.08
+
+english_replay:
+  hub_id: "HuggingFaceFW/fineweb-edu"
+  subset: "sample-10BT"
+  max_tokens: null  # Definido proporcionalmente
+
+code_replay:
+  hub_id: "bigcode/starcoderdata"
+  languages: ["python", "javascript", "java"]
+  max_tokens: null
+
+# =============================================================================
+# Packing de Sequências
+# =============================================================================
+packing:
+  enabled: true
+  max_seq_length: 8192
+  pad_to_multiple_of: 64
+  # Separador entre documentos em sequências empacotadas
+  separator_token: "<eos>"
+
+# =============================================================================
+# Orçamentos de Tokens (medidos em tokens Gemma 4)
+# =============================================================================
+# NOTA: Estes valores devem ser atualizados após tokenizer_audit medir
+# a fertilidade real do tokenizer Gemma 4 sobre o Aurora-PT
+token_budgets:
+  pilot_small: 5_000_000_000   # 5B tokens (E4B, validação rápida)
+  pilot_large: 20_000_000_000  # 20B tokens (E4B, piloto completo)
+  main_medium: 20_000_000_000  # 20B tokens (26B-A4B)
+  main_large: 50_000_000_000   # 50B tokens (26B-A4B, orçamento máximo)
+  # TODO: Calcular steps necessários: budget / (batch_size * seq_length)
