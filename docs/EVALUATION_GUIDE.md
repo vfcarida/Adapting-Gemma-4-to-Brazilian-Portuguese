@@ -44,7 +44,7 @@ per entry and any split/gating notes.
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
 | BRoverbs | Proverb completion (5 options) | Accuracy | `Tropic-AI/BRoverbs` |
-| CAPITU | Brazilian literature comprehension | Accuracy | **Disabled by default** — no public HF dataset exists yet (paper: arXiv:2603.22576); see `src/eval/tasks/capitu.py` for how to plug in a local JSONL if you obtain the data |
+| CAPITU | Instruction-following w/ Brazilian literary context (NOT reading comprehension — see `src/eval/tasks/capitu.py`) | IFEval-style pass rate (current code assumes multiple-choice, needs rewriting) | **Disabled by default** — data lives at `github.com/maritaca-ai/capitu`, not the HF Hub (paper: arXiv:2603.22576) |
 
 ### Raciocinio (Math)
 
@@ -78,9 +78,13 @@ per entry and any split/gating notes.
 |-----------|------|--------|--------|
 | XL-Sum-PT | Summarization | ROUGE-L | `csebuetnlp/xlsum` (`portuguese`) |
 
-**Not wired into the config** (implemented as a task class but no verified
-real dataset was found — see comments in the task file):
-Tuguesice-PT (`tuguesice_pt.py`, entirely fabricated, zero hits anywhere).
+**Not wired into the config** (implemented as a task class but no usable
+dataset — see comments in the task file for the full explanation):
+Tuguesice-PT (`tuguesice_pt.py`) — this benchmark is real (CLARIN-PT-LDB,
+arXiv:2603.12872, part of `PORTULAN/portuguese-llm-leaderboard`), a prior
+pass here wrongly called it fabricated, but its data isn't public
+(held-out leaderboard data) and it targets *European* Portuguese cultural
+knowledge, not Brazilian — a poor fit for this project either way.
 
 ## Running Evaluation
 

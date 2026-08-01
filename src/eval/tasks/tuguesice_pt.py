@@ -1,8 +1,22 @@
 """Tuguesice-PT task.
 
-Unimplemented/unverified benchmark: "Tuguesice-PT" does not correspond to
-any known public dataset (zero hits, confirmed fabricated with no real
-alternative found) and this task is NOT wired into configs/eval/benchmarks.yaml.
+CORRECTION (live-verified 2026-08-01): this benchmark is real, NOT
+fabricated as a prior pass here claimed. It's introduced in "CLARIN-PT-LDB:
+An Open LLM Leaderboard for Portuguese to assess Language, Culture and
+Civility" (Silva, Gomes, Branco — U. Lisbon, PROPOR 2026, arXiv:2603.12872,
+ACL Anthology 2026.propor-1.7) — a manually-created 327-item QA benchmark
+covering Society/Geography/History/Politics/Cuisine/Sports, part of the
+`PORTULAN/portuguese-llm-leaderboard` HF Space.
+
+Still not usable here, for two DIFFERENT reasons than "fabricated":
+1. No public dataset file was found — the HF Space's visible file tree
+   doesn't include the actual QA items (likely held out to prevent
+   contamination, standard practice for leaderboard benchmarks).
+2. Even if the data surfaces, it targets *European* Portuguese cultural
+   knowledge (PORTULAN/Gervásio's focus), not Brazilian — a poor fit for
+   this project's PT-BR adaptation goal regardless of availability.
+
+Not wired into configs/eval/benchmarks.yaml.
 """
 
 from typing import Any
