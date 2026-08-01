@@ -34,7 +34,7 @@ from trl import DPOConfig, DPOTrainer
 from src.data.instruction_data_builder import format_gemma4_chat
 from src.train.callbacks import LocalMetricsCallback
 from src.train.peft_factories import create_peft_config
-from src.utils.checkpointing import save_training_state
+from src.utils.checkpointing import find_latest_checkpoint, save_training_state
 from src.utils.config_utils import load_config
 from src.utils.hf_utils import load_model_for_training, load_tokenizer
 from src.utils.logging_utils import MetricsLogger, get_logger, resolve_report_to
@@ -187,7 +187,13 @@ class DPOTrainerWrapper:
             # DPO-specific parameters
             beta=self.dpo_cfg.get("beta", 0.1),  # KL divergence coefficient
             loss_type=self.dpo_cfg.get("loss_type", "sigmoid"),  # DPO loss variant
-            max_prompt_length=self.dpo_cfg.get("max_prompt_length", 1024),
+            # trl>=1.0's DPOConfig dropped the separate max_prompt_length
+            # parameter it used to have — max_length is now the only knob,
+            # applied to the whole tokenized prompt+completion sequence
+            # (truncated per `truncation_mode`, default "keep_start"). This
+            # used to pass max_prompt_length=1024 too, which crashed with
+            # "unexpected keyword argument" on trl>=1.0 (confirmed live
+            # against the installed version) — removed.
             max_length=self.dpo_cfg.get("max_length", 2048),
             logging_steps=self.config.get("logging", {}).get("logging_steps", 10),
             save_steps=self.config.get("checkpointing", {}).get("save_steps", 500),
@@ -207,9 +213,17 @@ class DPOTrainerWrapper:
             callbacks=[LocalMetricsCallback(metrics_logger)],
         )
 
-        # Train
+        # Train (with automatic checkpoint resumption, same pattern as
+        # cpt_trainer.py — explicit override first, else auto-discover the
+        # latest checkpoint in output_dir. Previously this always started
+        # from scratch here even if a prior checkpoint existed.)
         logger.info("Starting DPO training...")
-        train_result = trainer.train()
+        resume_from = self.config.get("checkpointing", {}).get("resume_from_checkpoint")
+        if resume_from is None:
+            resume_from = find_latest_checkpoint(self.output_dir)
+        if resume_from:
+            logger.info(f"Resuming from checkpoint: {resume_from}")
+        train_result = trainer.train(resume_from_checkpoint=resume_from)
 
         # Save final aligned model. Only the main process writes files (see
         # cpt_trainer.py's save block for why).

@@ -8,6 +8,7 @@ Comandos disponíveis:
   smoke              — Smoke test end-to-end em CPU
   train-cpt          — Continued Pretraining
   train-sft          — Supervised Fine-Tuning
+  train-dpo          — Direct Preference Optimization (opcional, pós-SFT)
   merge              — Residual Merge (task arithmetic)
   eval               — Avaliação em benchmarks
   report             — Gera relatórios e figuras
@@ -344,6 +345,35 @@ def train_sft(
     from src.train.sft_trainer import SFTTrainerWrapper
 
     trainer = SFTTrainerWrapper(cfg)
+    trainer.run()
+
+
+# =============================================================================
+# train-dpo
+# =============================================================================
+
+
+@app.command("train-dpo")
+def train_dpo(
+    config: str = typer.Argument(..., help="Path para config YAML de DPO"),
+    dry_run: bool = typer.Option(False, help=DRY_RUN_HELP),
+    tiny: bool = typer.Option(False, help=TINY_HELP),
+):
+    """Executa DPO (Direct Preference Optimization) — estágio opcional pós-SFT."""
+    from src.utils.config_utils import load_config, merge_configs
+
+    cfg = load_config(config)
+
+    if dry_run:
+        typer.echo("[dry-run] DPO seria executado com config: " + config)
+        return
+
+    if tiny:
+        cfg = merge_configs(cfg, {"training": {"max_steps": 10}})
+
+    from src.train.dpo_trainer import DPOTrainerWrapper
+
+    trainer = DPOTrainerWrapper(cfg)
     trainer.run()
 
 

@@ -34,7 +34,10 @@ lora:
 dpo:
   beta: 0.1
   loss_type: "sigmoid"
-  max_prompt_length: 1024
+  # trl>=1.0's DPOConfig dropped the separate max_prompt_length parameter
+  # this used to have (see src/train/dpo_trainer.py) — max_length is the
+  # only length control now, applied to the whole prompt+completion
+  # sequence.
   max_length: 2048
   # Real, ungated, apache-2.0 Portuguese preference dataset (prompt/chosen/
   # rejected as plain strings — matches _load_preference_data's expected
