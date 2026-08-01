@@ -296,15 +296,7 @@ class BenchmarkRunner:
 
         start_time = time.time()
         if use_logprob:
-            # Extract answer options for each example
-            answer_options = []
-            for ex in eval_examples:
-                options = ex.get("options", [])
-                if options:
-                    # Use letter labels (A, B, C, D, E)
-                    answer_options.append([chr(65 + i) for i in range(len(options))])
-                else:
-                    answer_options.append(["A", "B", "C", "D"])
+            answer_options = self._build_logprob_answer_options(task, eval_examples)
             predictions = self._inference_logprob(model_resources, prompts, answer_options)
             inference_method = "logprob"
         elif self.use_vllm:
@@ -565,6 +557,35 @@ class BenchmarkRunner:
         del llm
         torch.cuda.empty_cache()
         return predictions
+
+    def _build_logprob_answer_options(
+        self, task: Any, eval_examples: list[dict]
+    ) -> list[list[str]]:
+        """Build the per-example candidate-answer lists for logprob scoring.
+
+        Two shapes of accuracy-metric task exist:
+        1. Lettered multiple-choice (enem, bluex, oab_bench, math_pt,
+           mmlu_en, arc_en, hellaswag_en, ...): each example has its own
+           "options" list; score the letter labels A, B, C, ...
+        2. Fixed-vocabulary classification with NO "options" field
+           (assin2_rte/rte_pt: "entailment"/"not_entailment", mrpc_pt:
+           "sim"/"nao"): every example shares the same small label set.
+           This used to fall through to a hardcoded ["A", "B", "C", "D"]
+           fallback regardless of task — meaningless for these tasks, since
+           their prompts ask for "entailment"/"sim" wording, not a letter,
+           so logprob scoring against A-D never matched what the prompt
+           actually requested. Derive the real label vocabulary from the
+           task's own gold labels instead.
+        """
+        fixed_label_set = sorted({str(task.get_gold_label(ex)) for ex in eval_examples})
+        answer_options = []
+        for ex in eval_examples:
+            options = ex.get("options", [])
+            if options:
+                answer_options.append([chr(65 + i) for i in range(len(options))])
+            else:
+                answer_options.append(fixed_label_set)
+        return answer_options
 
     def _inference_logprob(
         self,

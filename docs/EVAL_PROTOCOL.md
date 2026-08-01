@@ -86,7 +86,9 @@ choice = argmax(logprobs)
 **Vantagens**: Determinístico, não depende de parsing.
 **Desvantagens**: Requer acesso a logprobs, não simula uso real.
 
-**Implementação**: Disponível em `BenchmarkRunner` quando `evaluation.use_logprob: true` na config (a chave é `use_logprob`, não `scoring_mode`), e só se aplica quando `use_vllm: false`, `think_mode == "off"` e `metric == "accuracy"`. A pontuação faz teacher-forcing real: cada opção é anexada ao prompt e o modelo é avaliado token a token sobre ela (não apenas o próximo token após o prompt) — ver `BenchmarkRunner._inference_logprob`.
+**Implementação**: Disponível em `BenchmarkRunner` quando `evaluation.use_logprob: true` na config (a chave é `use_logprob`, não `scoring_mode`; é `true` por padrão em `configs/eval/benchmarks.yaml`/`benchmarks_colab.yaml`), e só se aplica quando `use_vllm: false`, `think_mode == "off"` e `metric == "accuracy"`. A pontuação faz teacher-forcing real: cada opção é anexada ao prompt e o modelo é avaliado token a token sobre ela (não apenas o próximo token após o prompt) — ver `BenchmarkRunner._inference_logprob`.
+
+As opções candidatas vêm de `BenchmarkRunner._build_logprob_answer_options`, que trata dois formatos de task com `metric: "accuracy"`: múltipla escolha com letras (enem, bluex, oab_bench, math_pt, mmlu_en, arc_en, hellaswag_en — usa as letras A, B, C... de acordo com o número de `options` de cada exemplo) e classificação de vocabulário fixo sem campo `options` (assin2_rte/rte_pt: "entailment"/"not_entailment"; mrpc_pt: "sim"/"nao" — usa o conjunto real de gold labels da task, não letras). Antes desta correção, o segundo caso caía sempre em `["A","B","C","D"]` fixo — sem sentido para essas tasks, já que seus prompts pedem "entailment"/"sim", nunca uma letra.
 
 ## Normalização PT-BR
 
