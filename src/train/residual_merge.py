@@ -251,10 +251,12 @@ def compute_residual_merge(
     # tokenizer that actually carries a working `chat_template` — verified
     # live: a Gemma 4 BASE tokenizer (google/gemma-4-E2B) has
     # `chat_template=None`, only the `-it` tokenizer has one. CPT doesn't
-    # change vocab/add tokens in this pipeline (no vocab_expansion path is
-    # wired up — see configs/model/*.yaml's `vocab_expansion.enabled:
-    # false`), so base/instruct/CPT all share the same vocabulary and using
-    # the instruct tokenizer loses nothing.
+    # change vocab/add tokens in this pipeline — vocabulary expansion was
+    # deliberately never implemented (see the note in configs/model/*.yaml
+    # where that block used to live: a live fertility audit found Gemma 4's
+    # large multilingual vocab doesn't have the severe PT-BR fertility gap
+    # that would justify it) — so base/instruct/CPT all share the same
+    # vocabulary and using the instruct tokenizer loses nothing.
     tokenizer = AutoTokenizer.from_pretrained(instruct_model_id)
     tokenizer.save_pretrained(output_path)
 

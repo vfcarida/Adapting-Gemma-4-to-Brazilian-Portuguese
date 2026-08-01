@@ -62,8 +62,18 @@ quantization:
   bnb_4bit_quant_type: "nf4"
   bnb_4bit_use_double_quant: true
 
-vocab_expansion:
-  enabled: false
-  sizes: [8000, 16000, 32000]
-  preserve_special_tokens: true
-  init_method: "mean"
+# Expansão vocabular NÃO implementada — decisão deliberada, não lacuna.
+# Chegou a existir aqui como bloco de config (enabled: false, nunca
+# conectado a nenhum código), mas foi removida em vez de mantida como
+# "aspiracional": um audit fertility real (src/data/tokenizer_audit.py)
+# rodado ao vivo em 2026-08 contra o tokenizer real do google/gemma-4-E2B-it
+# (262144 tokens de vocabulário) mostrou tokens_per_word≈1.37 em PT-BR vs.
+# ≈1.11 em EN — uma razão de ~1.24x, bem abaixo do problema clássico de
+# fertility (1.8-2.5x) que motivava expansão vocabular em tokenizers
+# antigos com vocabulário pequeno e majoritariamente em inglês (ex.
+# LLaMA-1/2, 32k tokens). O vocabulário grande e multilíngue do Gemma 4 já
+# lida com português razoavelmente bem; implementar expansão vocabular
+# (embeddings novos, cuidado para não colidir com os marcadores especiais
+# reais do chat template — ver GEMMA4_COMPLIANCE.md — validação que exige
+# GPU) não se justifica pelo ganho marginal medido. Reavaliar apenas se
+# um audit de fertility em corpus maior mostrar um gap bem mais severo.
