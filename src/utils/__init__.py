@@ -1,8 +1,9 @@
-from src.utils.config_utils import load_config
-from src.utils.logging_utils import get_logger
+from src.utils.config_utils import load_config as load_config
+from src.utils.logging_utils import get_logger as get_logger
 
 
 def set_seed(seed: int = 42):
     """Lazy import to avoid torch dependency at module level."""
     from src.utils.seed import set_seed as _set_seed
+
     _set_seed(seed)

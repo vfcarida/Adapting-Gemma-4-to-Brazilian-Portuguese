@@ -2,6 +2,23 @@
 
 > **Documento Executivo**: Visão completa do repositório, decisões técnicas, e guia de execução para reprodução do experimento.
 
+> **Nota de atualização**: este documento foi escrito antes de uma revisão
+> completa de correção do pipeline. Vários itens listados abaixo como "já
+> validados" descreviam testes que reimplementavam a lógica localmente em
+> vez de importar o código real (mascarando bugs reais — incluindo dois
+> `TypeError` que quebravam `scripts/run_data_qc.sh` na primeira execução, e
+> um bug silencioso onde o collator de treino descartava o masking de
+> labels do packing). Esses bugs foram corrigidos; IDs de modelo/dataset
+> fabricados (o namespace `Se7enB/*`, `dominguesm/aurora-pt`) foram
+> substituídos por IDs reais e verificados ao vivo no HF Hub
+> (`Itau-Unibanco/Aurora-PT`, `eduagarcia/enem_challenge`, etc. — ver
+> `configs/eval/benchmarks.yaml`); e um caminho de execução em GPU única via
+> **Google Colab** foi adicionado (`colab/`), que é agora o caminho
+> recomendado. A suíte de testes cresceu para 253 testes (incluindo novos
+> testes que exercitam o código real). Trate os números de teste e as
+> descrições de "validado" abaixo como o estado em 2025-07-15, não o atual
+> — ver `README.md` e `docs/GEMMA4_COMPLIANCE.md` para o estado corrigido.
+
 ---
 
 ## 1. O Que Este Projeto Faz

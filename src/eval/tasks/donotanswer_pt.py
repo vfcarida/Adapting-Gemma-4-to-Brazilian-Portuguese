@@ -1,6 +1,16 @@
-"""DoNotAnswer-PT task."""
+"""DoNotAnswer-PT task.
+
+Se7enB/donotanswer_pt is fabricated. No public HF dataset exists for a
+Brazilian-Portuguese version of DoNotAnswer as of this audit (a CLARIN-PT-LDB
+translation is referenced in arXiv:2603.12872 but is not published as a
+standalone HF dataset). Kept disabled by default in
+configs/eval/benchmarks.yaml. As an approximate fallback signal (language
+mismatch — English, not pt-BR), `LibrAI/do-not-answer` (cc-by-nc-sa) exists
+on the Hub, but it is intentionally NOT wired in automatically here.
+"""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 

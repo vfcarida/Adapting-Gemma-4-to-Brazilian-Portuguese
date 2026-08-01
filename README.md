@@ -1,8 +1,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-2.2+-ee4c2c?logo=pytorch" alt="PyTorch">
-  <img src="https://img.shields.io/badge/Transformers-4.45+-yellow?logo=huggingface" alt="Transformers">
-  <img src="https://img.shields.io/badge/Tests-216%20passed-green?logo=pytest" alt="Tests">
+  <img src="https://img.shields.io/badge/PyTorch-2.6+-ee4c2c?logo=pytorch" alt="PyTorch">
+  <img src="https://img.shields.io/badge/Transformers-5.5+-yellow?logo=huggingface" alt="Transformers">
+  <img src="https://img.shields.io/badge/Tests-253%20passed-green?logo=pytest" alt="Tests">
   <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
 </p>
 
@@ -16,6 +16,7 @@
 
 - [Overview](#overview)
 - [Quick Start](#-quick-start)
+- [Google Colab (Single-GPU Path)](#-google-colab-single-gpu-path)
 - [GCP Deployment (Step-by-Step)](#-gcp-deployment-step-by-step)
 - [Project Structure](#-project-structure)
 - [Pipeline Stages](#-pipeline-stages)
@@ -41,7 +42,7 @@ This repository implements a complete, production-ready pipeline for adapting Go
 3. **Supervised Fine-Tuning (SFT)** as an alternative instruction recovery path
 4. **Rigorous Evaluation** with bootstrap confidence intervals across 20+ Portuguese benchmarks
 
-The project follows scientific best practices from recent CPT research (Sabiá, Tucano, Biderman et al. 2024, Ibrahim et al. 2024) and is designed to run on Google Cloud Platform (GCP) with A100/H100 GPUs.
+The project follows scientific best practices from recent CPT research (Sabiá, Tucano, Biderman et al. 2024, Ibrahim et al. 2024). Two hardware paths are supported: **a single-GPU Google Colab notebook** (`colab/Gemma4_PTBR_Colab.ipynb` — QLoRA pilot on Gemma 4 E2B, the recommended way to run this project end-to-end without provisioning cloud infrastructure) and **Google Cloud Platform (GCP) with 1-4x A100/H100** for full-scale runs (E4B/26B-A4B, full fine-tune, the complete 20+ benchmark suite).
 
 ### Scientific Objectives
 
@@ -73,7 +74,7 @@ python3 -m venv .venv && source .venv/bin/activate
 # 3. Install dependencies
 pip install -e ".[dev]"
 
-# 4. Run full test suite (216 tests, ~3s, no GPU needed)
+# 4. Run full test suite (253 tests, ~4s, no GPU needed)
 pytest tests/ -q
 
 # 5. Validate environment readiness
@@ -95,6 +96,22 @@ bash scripts/preflight.sh --config configs/train/cpt_pilot.yaml
 # Launch pilot training
 gemma4pt train-cpt configs/train/cpt_pilot.yaml
 ```
+
+---
+
+## 🔬 Google Colab (Single-GPU Path)
+
+**This is the recommended way to train and evaluate a model end-to-end without any cloud setup.** Open [`colab/Gemma4_PTBR_Colab.ipynb`](colab/Gemma4_PTBR_Colab.ipynb) in Google Colab and run it cell by cell — it covers the complete pipeline on a single GPU (T4 16GB free tier, L4 24GB, or A100 40GB):
+
+1. Environment setup (correct dependency versions, without touching Colab's preinstalled PyTorch/CUDA)
+2. QLoRA Continued Pre-Training pilot on **Gemma 4 E2B** (`google/gemma-4-E2B` — Apache 2.0, not gated, the smallest real Gemma 4 model) over the **Aurora-PT** corpus with English replay
+3. Residual merge (task arithmetic) to recover instruction-following without additional training
+4. Evaluation on a fast subset of real Portuguese benchmarks (ENEM, BLUEX, ASSIN2-RTE, HateBR, OAB) + English retention (MMLU), with bootstrap/Wilson confidence intervals
+5. Results dashboard, generated inline
+
+See [`colab/README.md`](colab/README.md) for the full walkthrough, VRAM/session-time expectations, and how to persist checkpoints across sessions (Colab has no persistent disk — checkpoints push to your HF Hub). The Colab-specific configs are [`configs/train/cpt_colab_pilot.yaml`](configs/train/cpt_colab_pilot.yaml) and [`configs/eval/benchmarks_colab.yaml`](configs/eval/benchmarks_colab.yaml).
+
+To scale beyond a single GPU (larger models, the full 20+ benchmark suite, multi-GPU full fine-tune), continue to the GCP deployment guide below.
 
 ---
 
@@ -247,8 +264,10 @@ gemma4-pt-br-adaptation/
 │   ├── data/                     #   Dataset sources, preprocessing, mixtures
 │   │   └── aurora_pt.yaml        #   Aurora-PT corpus configuration
 │   ├── model/                    #   Model architecture, quantization
+│   │   ├── gemma4_e2b.yaml       #   Gemma 4 E2B — single-GPU/Colab config
 │   │   └── gemma4_e4b.yaml       #   Gemma 4 E4B model config
 │   ├── train/                    #   Training hyperparameters
+│   │   ├── cpt_colab_pilot.yaml  #   Colab: QLoRA on E2B, single GPU
 │   │   ├── cpt_pilot.yaml        #   Pilot: LoRA r=128, 5B tokens
 │   │   ├── cpt_main.yaml         #   Main: Full FT, 20-50B tokens
 │   │   ├── sft.yaml              #   Supervised fine-tuning
@@ -256,7 +275,8 @@ gemma4-pt-br-adaptation/
 │   │   ├── lr_sweep.yaml         #   Learning rate sweep
 │   │   └── ablation_packing.yaml #   Packing strategy ablation
 │   └── eval/                     #   Evaluation benchmarks & settings
-│       └── benchmarks.yaml       #   Full benchmark suite configuration
+│       ├── benchmarks.yaml       #   Full benchmark suite configuration
+│       └── benchmarks_colab.yaml #   Fast ~6-benchmark subset for Colab
 │
 ├── src/                          # Source code
 │   ├── cli.py                    #   CLI entry point (typer-based)
@@ -288,7 +308,7 @@ gemma4-pt-br-adaptation/
 │       ├── seed.py               #     Reproducibility (all RNGs)
 │       └── checkpointing.py      #     Checkpoint management
 │
-├── tests/                        # Test suite (216 tests)
+├── tests/                        # Test suite (253 tests)
 │   ├── test_integration_pipeline.py  # End-to-end pipeline tests
 │   ├── test_gemma4_compliance.py     # Gemma 4 format compliance
 │   ├── test_golden.py                # Deterministic fixture tests
@@ -329,6 +349,10 @@ gemma4-pt-br-adaptation/
 │   ├── pretrain_readiness_report.md # Pre-training readiness
 │   ├── dashboard.md              #   Results dashboard
 │   └── test_matrix.md            #   Test coverage matrix
+│
+├── colab/                        # Google Colab single-GPU path (recommended)
+│   ├── Gemma4_PTBR_Colab.ipynb   #   End-to-end notebook: train → merge → eval
+│   └── README.md                 #   Walkthrough, VRAM/session expectations
 │
 ├── pyproject.toml                # Package configuration
 ├── requirements.txt              # Core dependencies
@@ -454,25 +478,29 @@ lora:
 
 ## 📊 Evaluation Suite
 
-### 20+ Benchmarks Across 6 Groups
+### 20+ Benchmarks Across 7 Groups
+
+Every `hub_id` below is a **real, verified** HuggingFace dataset (verified live against the Hub — see `configs/eval/benchmarks.yaml` for exact IDs, splits, and the license/gating notes). `capitu`, `math_pt`, and `donotanswer_pt` are disabled by default (no verified public dataset exists yet — see the comments in that file for the closest alternatives).
 
 | Group | Benchmarks | What it measures |
 |-------|-----------|-----------------|
-| **Brasil Geral** | ENEM 2022/23/24, BLUEX | General knowledge in Portuguese |
-| **Semântica** | ASSIN2-RTE, ASSIN2-STS, CoPA-PT, MRPC-PT, RTE-PT | Language understanding |
-| **Classificação** | HateBR, TweetSentBR | Text classification |
-| **Jurídico** | OAB-Bench, LegalBench-BR, LeNER-Br | Legal domain |
-| **Cultura** | BRoverbs, CAPITU | Brazilian cultural knowledge |
-| **Retenção EN** | MMLU, HellaSwag, ARC | English capability retention |
-| **Segurança** | DoNotAnswer-PT | Safety alignment |
+| **Brasil Geral** | ENEM 2022/23/24 (`maritaca-ai/enem`), BLUEX (`eduagarcia-temp/BLUEX_without_images`) | General knowledge in Portuguese |
+| **Semântica** | ASSIN2-RTE/STS (`nilc-nlp/assin2`), CoPA-PT/BoolQ-PT/MRPC-PT/RTE-PT (`PORTULAN/extraglue`) | Language understanding |
+| **Classificação** | HateBR (`ruanchaves/hatebr`), TweetSentBR (`eduagarcia/tweetsentbr_fewshot`) | Text classification |
+| **Jurídico** | OAB-Bench (`eduagarcia/oab_exams`), LeNER-Br (`peluz/lener_br`), LegalBench-BR (`eduagarcia/portuguese_benchmark:brazilian_court_decisions_judgment`) | Legal domain |
+| **Cultura** | BRoverbs (`Tropic-AI/BRoverbs`) | Brazilian cultural knowledge |
+| **Domínio Público** | PublicHearing-BR (`unicamp-dl/PublicHearingBR`) | Public-hearing summarization |
+| **Retenção EN** | MMLU (`cais/mmlu`), HellaSwag (`Rowan/hellaswag`), ARC (`allenai/ai2_arc`) | English capability retention |
+| **Exploratório** | XL-Sum-PT (`csebuetnlp/xlsum`) | Summarization |
 
 ### Statistical Rigor
 
-- **Bootstrap CI**: 10,000 resamples, BCa method, 95% confidence intervals
-- **Paired tests**: Same questions compared across models
-- **Correction**: Holm-Bonferroni for multiple comparisons
-- **Dual scoring**: Generation (primary) + logprob (secondary)
-- **Think mode**: Evaluated with `think_on` and `think_off` for all reasoning tasks
+- **Confidence intervals**: [Wilson score interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval) for single-model accuracy (holds ~95% coverage even on small exam-style benchmarks like ENEM's 180 items/year — see `docs/CPT_BEST_PRACTICES_RESEARCH.md` for why plain CLT/bootstrap under-cover at this scale, per Bowyer et al. 2025); item-resampling **percentile bootstrap (10,000 resamples)** for metrics that aren't a simple accuracy (Pearson, macro-F1, entity-F1) — see `src/eval/bootstrap_ci.py`.
+- **Paired comparisons**: `paired_bootstrap_test` resamples the SAME items for both models each draw and reports the score difference + its bootstrap CI (significant iff the CI excludes zero) — not a simple win-rate.
+- **Correction**: Holm-Bonferroni for multiple comparisons (`src/eval/stats_tests.py`) — pre-register a small primary benchmark family before applying this across 20+ benchmarks × 2 think-modes, or power drops to near zero.
+- **Dual scoring**: Generation (default) or logprob (teacher-forced multi-token option scoring, `evaluation.use_logprob: true`) — see `src/eval/benchmark_runner.py`.
+- **Think mode**: Evaluated with `think_modes: ["off", "on"]`, using Gemma 4's real `enable_thinking` chat-template parameter (not a hand-appended string — see `docs/GEMMA4_COMPLIANCE.md`).
+- **Per-item results**: every prediction (prompt hash, raw output, parsed prediction, gold label, correctness) is persisted to `outputs/eval_cache/<key>_items.jsonl`, not just a metric summary — enabling post-hoc paired analysis.
 
 ---
 
@@ -509,7 +537,7 @@ gemma4pt run-all                   # Full pipeline (data → train → eval → 
 ## 🧪 Testing
 
 ```bash
-# Full suite (216 tests, ~3s, no GPU required)
+# Full suite (253 tests, ~4s, no GPU required)
 pytest tests/ -q
 
 # By category
@@ -544,11 +572,11 @@ gemma4pt smoke
 
 | Model | Description |
 |-------|-------------|
-| `CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it` | Previous Portuguese adaptation |
-| `maritaca-ai/sabia-7b` | Maritaca AI's Portuguese model |
-| Tucano 2 Instruct | PUCRS Portuguese model |
+| `CEIA-UFG/Gemma-3-Gaia-PT-BR-4b-it` | Previous Portuguese adaptation (CPT of Gemma 3 4B, ~13B tokens — see `docs/CPT_BEST_PRACTICES_RESEARCH.md`) |
+| `maritaca-ai/sabia-7b` | Maritaca AI's Portuguese model (base, non-chat — evaluated with `is_chat_model: false`) |
+| `TucanoBR/Tucano-2-7b-instruct` | PUCRS Portuguese model (disabled by default in `configs/eval/benchmarks.yaml` — enable if needed) |
 
-> ⚠️ **Important**: Verify actual model IDs on HuggingFace before launching training. Gemma 4 naming may differ from what's listed here. Run: `python3 -c "from huggingface_hub import HfApi; [print(m.id) for m in HfApi().list_models(search='gemma-4', author='google')]"`
+All model and dataset IDs in this repo (`configs/model/*.yaml`, `configs/eval/benchmarks.yaml`) were verified live against the HuggingFace Hub API as of this writing. HF Hub content can still change — re-verify with `huggingface_hub.HfApi().model_info(...)` / `dataset_info(...)` before a long-running or expensive job if it's been a while.
 
 ---
 
@@ -558,12 +586,13 @@ This project's methodology is informed by recent research:
 
 | Paper | Key Insight Applied |
 |-------|-------------------|
-| Biderman et al. (2024) "LoRA Learns Less and Forgets Less" | LoRA r=128+ for CPT (r=64 recovers only ~80%) |
-| Ibrahim et al. (2024) "Simple Strategies for CPT" | 5-10% replay sufficient for forgetting prevention |
-| Sabiá (Maritaca, 2023) | 7B tokens on LLaMA-7B → +20% on ENEM |
-| Tucano (PUCRS, 2024) | Data quality > quantity; heavy dedup crucial |
+| Biderman et al. (2024) "LoRA Learns Less and Forgets Less" | For CPT specifically, LoRA LR should be ~1e-5 to 5e-5 (not the 10x-higher rule that applies to instruction tuning); full fine-tune generally learns more than even high-rank LoRA at CPT scale |
+| Ibrahim et al. (2024) "Simple Strategies for CPT" | ~5% replay for a same-domain shift, ~25% for a new-language shift (English→German in their study, the closest analog to English→Portuguese here) |
+| Sabiá (Maritaca, 2023) | ~10B PT tokens CPT on LLaMA → large ENEM/Poeta gains at small English cost |
+| Tucano (PUCRS, 2024) | Most PT benchmarks don't scale monotonically with CPT tokens — only CALAME-PT/LAMBADA-PT/ARC-PT/HellaSwag-PT reliably do; use those as in-training progress signals |
 | Ilharco et al. (2023) "Task Arithmetic" | Residual merge with α=0.5-1.0 for CPT |
-| Yadav et al. (2023) "TIES-Merging" | k=20%, α=0.5 when combining multiple vectors |
+| Huang et al. (2024) "Chat Vector" | `θ_target = θ_CPT + α·(θ_instruct − θ_base)`, α=0.5-1.0 — same formula as residual merge here, applied specifically to recover chat behavior post-CPT |
+| Yadav et al. (2023) "TIES-Merging" | k=20%, α=1.0 when combining multiple task vectors (not currently implemented — single-vector residual merge only) |
 
 **Full literature review:** [`docs/CPT_BEST_PRACTICES_RESEARCH.md`](docs/CPT_BEST_PRACTICES_RESEARCH.md)
 
@@ -573,11 +602,11 @@ This project's methodology is informed by recent research:
 
 Every experiment is fully reproducible:
 
-- **Fixed seeds**: Default 42 (configurable), deterministic ops enabled
+- **Fixed seeds**: Default 42 (configurable) across random/numpy/torch/CUDA; full bit-for-bit determinism (`torch.use_deterministic_algorithms`) is opt-in via `set_seed(seed, full_determinism=True)` — it measurably slows training, so it's off by default and meant for debugging/golden tests, not full training runs
 - **Versioned configs**: All hyperparameters in committed YAML files
 - **Run manifests**: Git SHA, package versions, resolved configs saved per run
-- **Inference caching**: Eval results cached by MD5(model + benchmark + seed)
-- **Bootstrap CI**: 95% confidence intervals, not just point estimates
+- **Inference caching**: Eval results cached by a key covering model + benchmark + think_mode + seed + num_shots + generation settings + dataset config (see `BenchmarkRunner._cache_key`) — editing any of these invalidates the cache, rather than silently reusing stale results
+- **Confidence intervals**: 95% Wilson score (accuracy) or bootstrap (other metrics), not just point estimates — see Evaluation Suite above
 - **Document-level splits**: Content hash → deterministic train/val assignment
 - **Experiment cards**: Template at [`docs/experiment_card_template.md`](docs/experiment_card_template.md)
 
@@ -594,7 +623,8 @@ Every experiment is fully reproducible:
 | [`docs/EXPERIMENT_PLAN.md`](docs/EXPERIMENT_PLAN.md) | 11-step experimental protocol with acceptance criteria |
 | [`docs/GEMMA4_COMPLIANCE.md`](docs/GEMMA4_COMPLIANCE.md) | Gemma 4 chat template, think mode, multi-turn format |
 | [`docs/CPT_BEST_PRACTICES_RESEARCH.md`](docs/CPT_BEST_PRACTICES_RESEARCH.md) | Literature review (20+ papers) |
-| [`infra/gcp/QUICKSTART.md`](infra/gcp/QUICKSTART.md) | GCP deployment guide with cost estimates |
+| [`colab/README.md`](colab/README.md) | **Google Colab single-GPU path** — the recommended way to run this project end-to-end |
+| [`infra/gcp/QUICKSTART.md`](infra/gcp/QUICKSTART.md) | GCP deployment guide with cost estimates (for scaling beyond a single GPU) |
 | [`reports/TECHNICAL_REPORT.md`](reports/TECHNICAL_REPORT.md) | Technical report with methodology |
 
 ---
@@ -604,11 +634,13 @@ Every experiment is fully reproducible:
 | Task | Minimum | Recommended |
 |------|---------|-------------|
 | Tests, smoke, preflight | CPU only | Any machine |
+| CPT Colab Pilot (E2B, QLoRA) | 1× T4 16GB (Colab free tier) | 1× L4 24GB / A100 40GB (Colab Pro/Pro+) |
 | CPT Pilot (E4B, LoRA) | 1× A100 40GB | 1× A100 80GB |
 | CPT Main (26B, Full FT) | 4× A100 80GB | 4× A100 80GB (ZeRO-2) |
-| Evaluation | 1× A100 40GB | 1× A100 80GB |
+| Evaluation | 1× A100 40GB (or 1× T4/L4 for the Colab benchmark subset) | 1× A100 80GB |
 | Residual Merge | CPU (64GB RAM) | CPU (128GB RAM) |
-| Full pipeline | 1× A100 80GB | 4× A100 80GB |
+| Full pipeline (single GPU, Colab) | 1× T4 16GB | 1× A100 40GB |
+| Full pipeline (GCP, multi-GPU) | 1× A100 80GB | 4× A100 80GB |
 
 **VRAM estimation** is built-in:
 ```bash
@@ -622,14 +654,15 @@ bash scripts/preflight.sh --config configs/train/cpt_pilot.yaml
 
 | Issue | Solution |
 |-------|----------|
-| `flash-attn not installed` | Automatic fallback to SDPA (PyTorch native). Or: `pip install flash-attn` |
+| `flash-attn not installed` | Automatic fallback to SDPA (PyTorch native). Or: `pip install flash-attn` (on Colab, prefer `attn_implementation: "sdpa"` in the model config — building flash-attn in an ephemeral session is slow/fragile) |
 | OOM during training | Reduce `per_device_train_batch_size` or enable gradient checkpointing |
-| Spot VM preempted | Checkpoints auto-sync to GCS every 200 steps. Just restart the VM. |
+| Spot VM preempted (GCP) | Checkpoints auto-sync to GCS every 200 steps. Just restart the VM. |
+| Colab session disconnected | Checkpoints push to your HF Hub if `output.push_to_hub: true` is set — resume via `snapshot_download` + rerun the same training command (see `colab/README.md`) |
 | `model_config is required` | Ensure your training config has `model_config: "configs/model/..."` |
-| HF gated model access denied | Run `huggingface-cli login` with token that has Gemma access |
+| Gemma 4 models fail to load | `google/gemma-4-*` are Apache 2.0 and NOT gated — no `huggingface-cli login` needed to download; a token is only required to `push_to_hub` your own checkpoints |
 | Tests fail with `ModuleNotFoundError` | Run `pip install -e ".[dev]"` from project root |
 | NaN in loss | Reduce learning rate, check data quality, disable tf32 |
-| Slow data loading | Increase `dataloader_num_workers` (4-8 for A100) |
+| Slow data loading | Increase `dataloader_num_workers` (4-8 for A100; 2 on Colab, fewer CPU cores available) |
 
 ---
 

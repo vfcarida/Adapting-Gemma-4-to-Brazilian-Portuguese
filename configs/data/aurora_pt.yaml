@@ -7,15 +7,32 @@
 
 dataset:
   name: "aurora-pt"
-  hub_id: "dominguesm/aurora-pt"
-  # Alternativa: "nicholasKluge/Pt-Corpus-Instruct" para SFT
+  hub_id: "Itau-Unibanco/Aurora-PT"
+  # Licença: CC-BY-NC-SA-4.0 (não-comercial) — 331B tokens (GPT-2), ~855GB.
+  # NOTA: "nicholasKluge/Pt-Corpus-Instruct" é um dataset de instrução (SFT),
+  # não um substituto para o corpus de CPT usado aqui.
   split_strategy: "cluster"  # Split por clusters de near-duplicates
   val_ratio: 0.005  # 0.5% para validação
+  test_ratio: 0.005  # 0.5% para teste
   seed: 42
+
+# =============================================================================
+# Preprocessamento (caminho de treino ao vivo)
+# =============================================================================
+# Lido por AuroraLoader.__init__ / AuroraLoader.preprocess (src/data/aurora_loader.py),
+# usado no pipeline de CPT em produção (load_and_prepare).
+preprocessing:
+  min_chars: 100
+  max_chars: 500000
+  remove_emails: true
+  normalize_whitespace: true
 
 # =============================================================================
 # Pipeline de Qualidade de Dados
 # =============================================================================
+# Lido por make_splits.py (via quality_manifest.py) — pipeline de QC/dedup
+# offline usado para gerar splits e manifesto de qualidade, não pelo
+# AuroraLoader usado no treino ao vivo.
 quality_control:
   enabled: true
   manifest_path: "outputs/data_qc/quality_manifest.parquet"
@@ -91,11 +108,13 @@ mixtures:
     code: 0.08
 
 english_replay:
-  hub_id: "HuggingFaceFW/fineweb-edu"
+  hub_id: "HuggingFaceFW/fineweb-edu"  # dataset público, verificado
   subset: "sample-10BT"
   max_tokens: null  # Definido proporcionalmente
 
 code_replay:
+  # Dataset gated: requer autenticação HF (`huggingface-cli login`) e acesso
+  # concedido ao dataset em https://huggingface.co/datasets/bigcode/starcoderdata
   hub_id: "bigcode/starcoderdata"
   languages: ["python", "javascript", "java"]
   max_tokens: null

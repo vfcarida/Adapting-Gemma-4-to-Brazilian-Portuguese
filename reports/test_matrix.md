@@ -1,5 +1,9 @@
 # Test Matrix
 
+> **Nota**: snapshot histórico com contagens desatualizadas. Contagem atual
+> real (verificável com `pytest tests/ --collect-only -q`): **253 testes,
+> 0 falhas**. Ver `README.md` para o estado atual.
+
 ## Resumo
 
 | Categoria | Testes | Status |

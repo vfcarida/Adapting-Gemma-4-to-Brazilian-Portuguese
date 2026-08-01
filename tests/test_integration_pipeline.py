@@ -8,19 +8,18 @@ but exercise the real logic of data flow, configuration parsing, and
 argument wiring between components.
 """
 
-import pytest
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
 
 
 class TestPackingWithEOS:
     """Test EOS separator insertion in sequence packing (pure logic)."""
 
-    def _run_pack_logic(self, input_ids_list, max_seq_length, eos_token_id=None, mask_cross_doc_labels=False):
+    def _run_pack_logic(
+        self, input_ids_list, max_seq_length, eos_token_id=None, mask_cross_doc_labels=False
+    ):
         """Reproduce pack_sequences logic without importing the module."""
         IGNORE_INDEX = -100
         all_input_ids = []
@@ -46,8 +45,7 @@ class TestPackingWithEOS:
                 all_labels.append(labels)
                 buffer = buffer[max_seq_length:]
                 boundary_positions = [
-                    p - max_seq_length for p in boundary_positions
-                    if p >= max_seq_length
+                    p - max_seq_length for p in boundary_positions if p >= max_seq_length
                 ]
 
         return {"input_ids": all_input_ids, "labels": all_labels}
@@ -71,8 +69,10 @@ class TestPackingWithEOS:
     def test_label_masking_at_boundaries(self):
         """Labels at document boundaries should be -100 when mask enabled."""
         result = self._run_pack_logic(
-            [[10, 11, 12], [20, 21, 22]], max_seq_length=7,
-            eos_token_id=2, mask_cross_doc_labels=True,
+            [[10, 11, 12], [20, 21, 22]],
+            max_seq_length=7,
+            eos_token_id=2,
+            mask_cross_doc_labels=True,
         )
         labels = result["labels"][0]
         # Position 3 is EOS, position 4 is first token of doc 2
@@ -87,9 +87,7 @@ class TestPackingWithEOS:
 
     def test_no_eos_before_first_document(self):
         """EOS should only appear BETWEEN documents, not at the start."""
-        result = self._run_pack_logic(
-            [[10, 11, 12, 13, 14]], max_seq_length=5, eos_token_id=2
-        )
+        result = self._run_pack_logic([[10, 11, 12, 13, 14]], max_seq_length=5, eos_token_id=2)
         # Single document, no EOS should be inserted
         assert result["input_ids"][0] == [10, 11, 12, 13, 14]
 
@@ -141,7 +139,9 @@ class TestVRAMEstimation:
             hidden_dim, num_layers = 8192, 80
 
         activation_factor = 4
-        activations_per_layer = batch_size * seq_length * hidden_dim * dtype_bytes * activation_factor
+        activations_per_layer = (
+            batch_size * seq_length * hidden_dim * dtype_bytes * activation_factor
+        )
 
         if gradient_checkpointing:
             active_layers = int(math.sqrt(num_layers)) + 1
@@ -201,8 +201,9 @@ class TestConfigLoading:
             config = load_config(str(yaml_file))
             assert isinstance(config, dict), f"{yaml_file.name} did not parse to dict"
             # Training configs should have at minimum a training section
-            assert "training" in config or "experiment" in config, \
+            assert "training" in config or "experiment" in config, (
                 f"{yaml_file.name} missing training/experiment section"
+            )
 
     def test_eval_config_valid(self):
         """Evaluation config should parse and have required sections."""
@@ -237,29 +238,31 @@ class TestGCSCallbackRobust:
         last_process = FakeProcess()
         # Logic from GCSCheckpointSync.on_save:
         poll = last_process.poll()
-        should_skip = (poll is None)
+        should_skip = poll is None
         assert should_skip is True
 
     def test_detect_failure(self):
         """Should detect non-zero exit as failure."""
+
         class FakeProcess:
             def poll(self):
                 return 1  # Non-zero = failure
 
         last_process = FakeProcess()
         poll = last_process.poll()
-        is_failure = (poll is not None and poll != 0)
+        is_failure = poll is not None and poll != 0
         assert is_failure is True
 
     def test_success_detection(self):
         """Should detect zero exit as success."""
+
         class FakeProcess:
             def poll(self):
                 return 0  # Success
 
         last_process = FakeProcess()
         poll = last_process.poll()
-        is_success = (poll is not None and poll == 0)
+        is_success = poll is not None and poll == 0
         assert is_success is True
 
 

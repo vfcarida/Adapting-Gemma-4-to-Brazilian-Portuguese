@@ -68,7 +68,12 @@ logging:
   tensorboard_dir: "outputs/cpt_pilot/tensorboard"
 
 evaluation:
-  eval_steps: 500
+  # Must be a divisor of checkpointing.save_steps (200) when
+  # load_best_model_at_end is on — transformers requires save_steps to be a
+  # round multiple of eval_steps. (cpt_trainer.py also degrades gracefully
+  # if a future edit breaks this, but keeping them consistent here avoids
+  # silently losing load_best_model_at_end.)
+  eval_steps: 200
   eval_strategy: "steps"
   metric_for_best_model: "eval_loss"
   greater_is_better: false

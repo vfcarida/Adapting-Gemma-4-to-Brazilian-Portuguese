@@ -17,7 +17,6 @@ Execução:
     gemma4pt smoke
 """
 
-import json
 import os
 import sys
 import tempfile
@@ -52,7 +51,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 1. Config loading and merging
     # =========================================================================
     def test_config_loading():
-        from src.utils.config_utils import load_config, merge_configs, flatten_config
+        from src.utils.config_utils import flatten_config, load_config, merge_configs
 
         # Load real config
         cfg = load_config("configs/eval/benchmarks.yaml")
@@ -76,8 +75,9 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 2. Seed and reproducibility
     # =========================================================================
     def test_seed():
-        from src.utils.seed import set_seed
         import numpy as np
+
+        from src.utils.seed import set_seed
 
         set_seed(42)
         a = np.random.rand(10)
@@ -87,6 +87,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         try:
             import torch
+
             set_seed(42)
             ta = torch.randn(10)
             set_seed(42)
@@ -101,7 +102,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 3. Prompt builders
     # =========================================================================
     def test_prompt_builders():
-        from src.data.prompt_builders import Gemma4PromptBuilder, BaselinePromptBuilder
+        from src.data.prompt_builders import BaselinePromptBuilder, Gemma4PromptBuilder
 
         # Test with None tokenizer (fallback mode)
         class FakeTokenizer:
@@ -110,20 +111,22 @@ def run_smoke_test(verbose: bool = False) -> bool:
         builder = Gemma4PromptBuilder(FakeTokenizer())
         messages = [{"role": "user", "content": "Olá, mundo!"}]
 
-        # Inference format
+        # Inference format. Real Gemma 4 turn markers (verified live against
+        # the tokenizer's own chat template) — not "<start_of_turn>", which
+        # is Gemma 2/3's format.
         result = builder.format_for_inference(messages, think_mode="off")
         assert "Olá, mundo!" in result
-        assert "<start_of_turn>user" in result
-        assert "<start_of_turn>model" in result
+        assert "<|turn>user" in result
+        assert "<|turn>model" in result
 
         # Think mode on
         result_think = builder.format_for_inference(messages, think_mode="on")
-        assert "<think>" in result_think
+        assert "<|think|>" in result_think
 
         # Think mode budget
         result_budget = builder.format_for_inference(messages, think_mode="budget")
-        assert "<think>" in result_budget
-        assert "</think>" in result_budget
+        assert "<|channel>thought" in result_budget
+        assert "<channel|>" in result_budget
 
         # Strip thought
         text_with_think = "<think>pensando...</think>A resposta é B"
@@ -159,8 +162,11 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_prompt_templates():
         from src.eval.prompt_templates import (
-            get_prompt_template, strip_thought, extract_thought, PromptBuilder,
-            TASK_INSTRUCTIONS, TASK_FORMATTERS,
+            TASK_FORMATTERS,
+            TASK_INSTRUCTIONS,
+            extract_thought,
+            get_prompt_template,
+            strip_thought,
         )
 
         # All tasks have instructions and formatters
@@ -178,9 +184,9 @@ def run_smoke_test(verbose: bool = False) -> bool:
         assert "Qual é a capital" in prompt
         assert "C) Brasília" in prompt
 
-        # Think mode
+        # Think mode (real Gemma 4 marker, not Gemma 2/3's "<think>")
         prompt_think = template.format_prompt(example, think_mode="on")
-        assert "<think>" in prompt_think
+        assert "<|think|>" in prompt_think
 
         # Strip/extract
         assert strip_thought("<think>x</think>y") == "y"
@@ -227,12 +233,14 @@ def run_smoke_test(verbose: bool = False) -> bool:
         assert ci["accuracy"]["ci_lower"] <= ci["accuracy"]["mean"]
         assert ci["accuracy"]["mean"] <= ci["accuracy"]["ci_upper"]
 
-        # Paired test
+        # Paired test — reports a paired difference + bootstrap CI (not a
+        # classical p-value; see bootstrap_ci.py's docstring for why).
         preds_b = ["A", "C", "C", "A", "A"] * 20
         result = paired_bootstrap_test(
             preds, preds_b, golds, metric_fn, "accuracy", n_bootstrap=100
         )
-        assert "p_value_a_gt_b" in result
+        assert "mean_diff_a_minus_b" in result
+        assert "significant" in result
 
     check("bootstrap_ci", test_bootstrap)
 
@@ -240,11 +248,13 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 7. Stats tests
     # =========================================================================
     def test_stats():
-        from src.eval.stats_tests import (
-            paired_permutation_test, compute_effect_size,
-            multiple_comparison_correction,
-        )
         import numpy as np
+
+        from src.eval.stats_tests import (
+            compute_effect_size,
+            multiple_comparison_correction,
+            paired_permutation_test,
+        )
 
         scores_a = np.array([0.8, 0.9, 0.7, 0.85, 0.75])
         scores_b = np.array([0.6, 0.7, 0.5, 0.65, 0.55])
@@ -272,7 +282,9 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_checkpointing():
         from src.utils.checkpointing import (
-            save_training_state, load_training_state, find_latest_checkpoint,
+            find_latest_checkpoint,
+            load_training_state,
+            save_training_state,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -302,7 +314,10 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # =========================================================================
     def test_contamination():
         from src.data.contamination_checks import (
-            normalize_text, compute_hash, ngrams, ContaminationChecker,
+            ContaminationChecker,
+            compute_hash,
+            ngrams,
+            normalize_text,
         )
 
         # Normalization
@@ -338,34 +353,36 @@ def run_smoke_test(verbose: bool = False) -> bool:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Synthetic results
-            results = [{
-                "model_name": "test_model",
-                "model_id": "test/model",
-                "benchmarks": {
-                    "think_off": {
-                        "enem": {
-                            "task": "enem",
-                            "group": "brasil_geral",
-                            "metric_name": "accuracy",
-                            "metrics": {"accuracy": 0.75},
-                            "num_examples": 100,
-                            "inference_time_sec": 10.0,
-                            "think_mode": "off",
-                            "raw_predictions": ["A", "B"],
-                        },
-                        "assin2_rte": {
-                            "task": "assin2_rte",
-                            "group": "semantica",
-                            "metric_name": "accuracy",
-                            "metrics": {"accuracy": 0.82},
-                            "num_examples": 50,
-                            "inference_time_sec": 5.0,
-                            "think_mode": "off",
-                            "raw_predictions": ["entailment"],
-                        },
-                    }
-                },
-            }]
+            results = [
+                {
+                    "model_name": "test_model",
+                    "model_id": "test/model",
+                    "benchmarks": {
+                        "think_off": {
+                            "enem": {
+                                "task": "enem",
+                                "group": "brasil_geral",
+                                "metric_name": "accuracy",
+                                "metrics": {"accuracy": 0.75},
+                                "num_examples": 100,
+                                "inference_time_sec": 10.0,
+                                "think_mode": "off",
+                                "raw_predictions": ["A", "B"],
+                            },
+                            "assin2_rte": {
+                                "task": "assin2_rte",
+                                "group": "semantica",
+                                "metric_name": "accuracy",
+                                "metrics": {"accuracy": 0.82},
+                                "num_examples": 50,
+                                "inference_time_sec": 5.0,
+                                "think_mode": "off",
+                                "raw_predictions": ["entailment"],
+                            },
+                        }
+                    },
+                }
+            ]
 
             builder = ReportBuilder(results, output_dir=tmpdir)
             builder.build_all()
@@ -430,7 +447,7 @@ def run_smoke_test(verbose: bool = False) -> bool:
     # 13. Preflight
     # =========================================================================
     def test_preflight():
-        from src.preflight import run_preflight, PreflightResult
+        from src.preflight import PreflightResult, run_preflight
 
         result = run_preflight(
             check_gpu=False,

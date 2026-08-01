@@ -1,13 +1,11 @@
 """Tests for prediction parsing in evaluation tasks."""
 
-import pytest
-from src.eval.tasks.base_task import BaseTask
-from src.eval.tasks.enem import EnemTask
 from src.eval.tasks.assin2_rte import Assin2RTETask
-from src.eval.tasks.hatebr import HateBRTask
-from src.eval.tasks.tweet_sentbr import TweetSentBRTask
 from src.eval.tasks.copa_pt import CopaPTTask
+from src.eval.tasks.enem import EnemTask
+from src.eval.tasks.hatebr import HateBRTask
 from src.eval.tasks.mrpc_pt import MRPCPTTask
+from src.eval.tasks.tweet_sentbr import TweetSentBRTask
 
 
 class TestLetterExtraction:
@@ -75,15 +73,21 @@ class TestSentimentParsing:
 
 
 class TestCopaParsing:
+    """CoPA-PT now uses letter-based answers (A/B), matching the "A) / B)"
+    options actually rendered by the default MC formatter and the
+    letter-based TASK_INSTRUCTIONS["copa_pt"] wording — previously the
+    parser looked for "1"/"2" while the rendered prompt showed "A)"/"B)",
+    which pinned accuracy near chance."""
+
     def setup_method(self):
         self.task = CopaPTTask()
 
-    def test_choice_1(self):
-        assert self.task.parse_prediction("1") == "1"
-        assert self.task.parse_prediction("1. primeira opcao") == "1"
+    def test_choice_a(self):
+        assert self.task.parse_prediction("A") == "A"
+        assert self.task.parse_prediction("A) primeira opcao") == "A"
 
-    def test_choice_2(self):
-        assert self.task.parse_prediction("2") == "2"
+    def test_choice_b(self):
+        assert self.task.parse_prediction("B") == "B"
 
 
 class TestMRPCParsing:

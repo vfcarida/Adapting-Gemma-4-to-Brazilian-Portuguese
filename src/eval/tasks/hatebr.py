@@ -1,6 +1,7 @@
 """HateBR task."""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 
@@ -8,15 +9,26 @@ class HateBRTask(BaseTask):
     """HateBR hate speech detection."""
 
     def load_data(self, config: dict[str, Any]) -> list[dict]:
-        hub_id = config.get("hub_id", "Se7enB/HateBR")
-        data = self._load_from_hub(hub_id)
+        # Se7enB/HateBR was fabricated. Replaced with ruanchaves/hatebr (real).
+        # That repo's main branch uses a legacy loading script, which the
+        # installed datasets>=3.0 no longer executes ("Dataset scripts are no
+        # longer supported"); revision="refs/convert/parquet" loads the Hub's
+        # auto-converted Parquet mirror instead (verified: 1400 test rows).
+        hub_id = config.get("hub_id", "ruanchaves/hatebr")
+        data = self._load_from_hub(
+            hub_id, split="test", revision="refs/convert/parquet", trust_remote_code=True
+        )
 
         examples = []
         for item in data:
-            label_val = item.get("label", item.get("offensive_language", 0))
-            label = "odio" if label_val == 1 else "nao_odio"
+            # Real schema: instagram_comments (str), offensive_language (bool).
+            text = item.get("instagram_comments", item.get("text", ""))
+            offensive = item.get("offensive_language")
+            if offensive is None:
+                offensive = item.get("label", False)
+            label = "odio" if bool(offensive) else "nao_odio"
             example = {
-                "text": item.get("text", item.get("instagram_comment", "")),
+                "text": text,
                 "label": label,
             }
             examples.append(example)

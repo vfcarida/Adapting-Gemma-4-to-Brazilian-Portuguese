@@ -2,7 +2,11 @@
 
 Formato: problema de matemática → resposta numérica ou alternativa
 Métrica: accuracy (normaliza respostas numéricas)
-TODO: Identificar fonte oficial do dataset Math-PT
+
+Nenhum benchmark verificado de matemática em português brasileiro foi
+encontrado no HF Hub (Se7enB/math_pt era fabricado). Mantido desabilitado
+por padrão em configs/eval/benchmarks.yaml até que uma fonte real seja
+identificada.
 """
 
 import re
@@ -18,21 +22,26 @@ class MathPT(BaseTask):
     def parse_prediction(self, raw_output: str) -> str:
         """Extrai resposta do problema matemático.
 
-        Tenta extrair: letra de alternativa OU valor numérico final.
+        Tenta extrair: valor numérico final OU letra de alternativa.
+
+        Prioriza número sobre letra (a maioria das respostas matemáticas é
+        numérica). Anteriormente o código escaneava por qualquer caractere
+        A-E ANTES de tentar números, o que dava falso positivo em qualquer
+        texto contendo essas letras (ex.: "RESULTADO: 42" retornava "E" —
+        a primeira letra A-E encontrada em "RESULTADO" — em vez de "42").
+        Usa o parser robusto de letras da BaseTask (`_extract_letter`) como
+        fallback apenas quando não há número na resposta.
         """
         text = raw_output.strip()
 
-        # Tentar extrair letra (se múltipla escolha)
-        upper = text.upper()
-        for char in upper:
-            if char in "ABCDE":
-                return char
-
-        # Tentar extrair número final
         numbers = re.findall(r"-?\d+(?:[.,]\d+)?", text)
         if numbers:
             # Retorna o último número encontrado (tipicamente a resposta final)
             return numbers[-1].replace(",", ".")
+
+        letter = self._extract_letter(text)
+        if letter:
+            return letter
 
         return text[:20]  # Fallback: primeiros 20 chars
 

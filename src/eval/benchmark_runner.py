@@ -20,7 +20,6 @@ Usage:
 
 import hashlib
 import json
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -29,13 +28,44 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from src.eval.bootstrap_ci import bootstrap_ci, wilson_score_interval
 from src.eval.metrics import compute_metrics_for_task
-from src.eval.prompt_templates import get_prompt_template
+from src.eval.prompt_templates import PromptBuilder, get_prompt_template, strip_thought
 from src.utils.config_utils import load_config
 from src.utils.logging_utils import get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
+
+
+def _is_unavailable_local_checkpoint(model_id: str) -> bool:
+    """Detect a local checkpoint path that hasn't been produced yet.
+
+    Model IDs in `models_to_evaluate` are either HF Hub IDs (`org/repo`,
+    e.g. `google/gemma-4-E4B-it`) or local checkpoint paths produced by this
+    repo's training stages (always `outputs/...`, e.g.
+    `outputs/cpt_pilot/final`). The old check (`not Path(mid).exists() and
+    "/" not in mid`) skipped nothing in practice, since every Hub ID and
+    every local path here contains a "/" — so untrained local checkpoints
+    were always attempted and crashed `from_pretrained`. This distinguishes
+    "looks like a local path" from "looks like a Hub ID" instead of relying
+    on "/" as the signal.
+    """
+    looks_local = model_id.startswith(("outputs/", "./", "../")) or Path(model_id).is_absolute()
+    return looks_local and not Path(model_id).exists()
+
+
+class EmptyBenchmarkDataError(RuntimeError):
+    """Raised when a benchmark's data loader returns zero examples.
+
+    Previously an empty example list propagated silently into
+    `compute_metrics_for_task`, where `macro_f1`/`pearson`/etc. would raise
+    an uncaught sklearn/scipy exception deep in the call stack (or, before
+    the `macro_f1` empty-guard fix, crash the ENTIRE evaluation run for
+    every other benchmark that had already computed results, since
+    `eval_results.json` is only written at the very end). This gives a
+    single, clear, catchable signal instead.
+    """
 
 
 class BenchmarkRunner:
@@ -66,7 +96,13 @@ class BenchmarkRunner:
         self.think_modes = eval_cfg.get("think_modes", ["off"])
         self.strip_think = eval_cfg.get("strip_think_from_output", True)
 
-    def run_all(self, model_id: str, model_name: str) -> dict[str, Any]:
+    def run_all(
+        self,
+        model_id: str,
+        model_name: str,
+        is_chat_model: bool = True,
+        num_shots_override: int | None = None,
+    ) -> dict[str, Any]:
         """Run all enabled benchmarks for a single model.
 
         Evaluates in both think_on and think_off modes (if configured),
@@ -76,6 +112,17 @@ class BenchmarkRunner:
         Args:
             model_id: HuggingFace model ID or local path.
             model_name: Human-readable name for reporting.
+            is_chat_model: Whether this model is instruction-tuned (uses its
+                tokenizer's chat template) or a base/CPT-only checkpoint
+                (uses the plain few-shot protocol, no chat markup). Comes
+                from `models_to_evaluate[].is_chat_model` in the config —
+                previously ignored, so every model (including base
+                checkpoints and non-chat baselines like Sabia-7B) was
+                prompted with hardcoded Gemma 4 chat markup regardless.
+            num_shots_override: If set, overrides each benchmark's
+                `num_shots` for this model (from
+                `models_to_evaluate[].num_shots_override`, e.g. forcing
+                Sabia-7B to always use 5-shot).
 
         Returns:
             Dict with model metadata and nested benchmark results.
@@ -90,17 +137,34 @@ class BenchmarkRunner:
             for bench_name, bench_cfg in benchmarks.items():
                 if not bench_cfg.get("enabled", True):
                     continue
-                cache_key = self._cache_key(model_id, bench_name, think_mode)
+                cache_key = self._cache_key(
+                    model_id, bench_name, think_mode, bench_cfg, num_shots_override
+                )
                 if not self._load_cache(cache_key):
                     needs_inference = True
                     break
             if needs_inference:
                 break
 
-        # Load model once for all benchmarks (avoid repeated loading)
+        # Load model (and always the tokenizer, even under vLLM/logprob-only
+        # paths — apply_chat_template only needs the tokenizer, and the
+        # PromptBuilder below needs it to format prompts correctly for
+        # whichever model is being evaluated).
         model_resources = None
-        if needs_inference and not self.use_vllm:
-            model_resources = self._load_model(model_id)
+        tokenizer = None
+        if needs_inference:
+            if not self.use_vllm:
+                model_resources = self._load_model(model_id)
+                tokenizer = model_resources["tokenizer"]
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+        # One PromptBuilder per model, reused across all benchmarks. Using
+        # the model's OWN tokenizer.apply_chat_template (when is_chat_model)
+        # means each model family (Gemma 4, Gemma 3/Gaia, ChatML/Tucano, ...)
+        # gets its own correct chat template for free — no need to hardcode
+        # a template per `prompt_builder` name from the config.
+        prompt_builder = PromptBuilder(tokenizer=tokenizer, is_chat_model=is_chat_model)
 
         for think_mode in self.think_modes:
             mode_key = f"think_{think_mode}"
@@ -113,7 +177,9 @@ class BenchmarkRunner:
                 logger.info(f"Running {bench_name} (think={think_mode}) on {model_name}")
 
                 # Check cache first (avoids re-running expensive inference)
-                cache_key = self._cache_key(model_id, bench_name, think_mode)
+                cache_key = self._cache_key(
+                    model_id, bench_name, think_mode, bench_cfg, num_shots_override
+                )
                 cached = self._load_cache(cache_key)
                 if cached:
                     logger.info(f"  Using cached result for {bench_name}")
@@ -121,10 +187,19 @@ class BenchmarkRunner:
                     continue
 
                 # Run the benchmark fresh
-                bench_result = self._run_single_benchmark(
-                    model_id, bench_name, bench_cfg, think_mode,
-                    model_resources=model_resources,
-                )
+                try:
+                    bench_result = self._run_single_benchmark(
+                        model_id,
+                        bench_name,
+                        bench_cfg,
+                        think_mode,
+                        model_resources=model_resources,
+                        prompt_builder=prompt_builder,
+                        num_shots_override=num_shots_override,
+                    )
+                except EmptyBenchmarkDataError as e:
+                    logger.error(f"  Skipping {bench_name}: {e}")
+                    continue
                 results["benchmarks"][mode_key][bench_name] = bench_result
 
                 # Persist to cache
@@ -133,13 +208,20 @@ class BenchmarkRunner:
         # Free model after all benchmarks for this model
         if model_resources:
             del model_resources
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return results
 
     def _run_single_benchmark(
-        self, model_id: str, bench_name: str, bench_cfg: dict, think_mode: str,
+        self,
+        model_id: str,
+        bench_name: str,
+        bench_cfg: dict,
+        think_mode: str,
         model_resources: dict | None = None,
+        prompt_builder: PromptBuilder | None = None,
+        num_shots_override: int | None = None,
     ) -> dict[str, Any]:
         """Run a single benchmark: load data → format prompts → inference → score.
 
@@ -149,6 +231,10 @@ class BenchmarkRunner:
             bench_cfg: Benchmark configuration dict.
             think_mode: "on" or "off".
             model_resources: Pre-loaded model and tokenizer dict (optional).
+            prompt_builder: Model-specific PromptBuilder (chat template vs
+                plain few-shot). Required for correct prompting — see
+                `run_all`'s docstring.
+            num_shots_override: Per-model override for `bench_cfg["num_shots"]`.
 
         Returns:
             Dict with task info, metrics, timing, and sample predictions.
@@ -158,7 +244,15 @@ class BenchmarkRunner:
         # Step 1: Load task data (from HF Hub or local JSONL)
         task = load_task(bench_cfg["task"])
         examples = task.load_data(bench_cfg)
-        num_shots = bench_cfg.get("num_shots", 0)
+        if not examples:
+            raise EmptyBenchmarkDataError(
+                f"{bench_name} (task={bench_cfg['task']}, hub_id={bench_cfg.get('hub_id')}) "
+                "loaded 0 examples — check the dataset ID/config/split, network access, "
+                "and HF auth (gated datasets need HF_TOKEN)."
+            )
+        num_shots = (
+            num_shots_override if num_shots_override is not None else bench_cfg.get("num_shots", 0)
+        )
 
         # Step 2: Split few-shot examples from evaluation examples
         # Use first N examples as few-shot demonstrations, evaluate on the rest
@@ -172,10 +266,19 @@ class BenchmarkRunner:
             bench_cfg["task"], num_shots, few_shot_examples=few_shot_examples
         )
 
-        # Step 3: Format all prompts with Gemma 4 chat template
+        max_samples = bench_cfg.get("max_samples")
+        if max_samples and len(eval_examples) > max_samples:
+            eval_examples = eval_examples[:max_samples]
+
+        # Step 3: Format all prompts, using the model-appropriate
+        # PromptBuilder (chat template for instruction-tuned models, plain
+        # few-shot text for base/CPT-only checkpoints and non-chat
+        # baselines) instead of the previous hardcoded Gemma 4 markup.
         prompts = []
         for example in eval_examples:
-            prompt = prompt_template.format_prompt(example, think_mode=think_mode)
+            prompt = prompt_template.format_prompt(
+                example, think_mode=think_mode, prompt_builder=prompt_builder
+            )
             prompts.append(prompt)
 
         # Step 4: Run model inference
@@ -183,6 +286,7 @@ class BenchmarkRunner:
         use_logprob = (
             self.config.get("evaluation", {}).get("use_logprob", False)
             and bench_cfg.get("metric") == "accuracy"
+            and not self.use_vllm
             and model_resources is not None
             and think_mode == "off"  # Logprob doesn't work with thinking
         )
@@ -210,32 +314,106 @@ class BenchmarkRunner:
             inference_method = "generate"
         inference_time = time.time() - start_time
 
-        # Step 4: Parse predictions (strip thinking, extract answer)
+        # Step 4: Parse predictions (strip thinking, extract answer). Think
+        # blocks can appear even in "off" mode (a model may emit them
+        # unprompted) or be truncated by max_new_tokens before the closing
+        # tag — strip unconditionally rather than only when think_mode=="on"
+        # and only when the closing tag is present. Uses strip_thought()
+        # (handles both Gemma 4's real <|channel>thought...<channel|>
+        # markers and the legacy <think>...</think> convention some other
+        # model families use) rather than a narrower inline regex.
         parsed_predictions = []
+        stripped_outputs = []
         for pred in predictions:
-            # Remove <think>...</think> blocks before parsing (think_on mode)
-            if self.strip_think and think_mode == "on":
-                pred = re.sub(r"<think>.*?</think>", "", pred, flags=re.DOTALL).strip()
+            if self.strip_think:
+                pred = strip_thought(pred)
+            stripped_outputs.append(pred)
             parsed = task.parse_prediction(pred)
             parsed_predictions.append(parsed)
 
         # Step 5: Compute metrics against gold labels
         gold_labels = [task.get_gold_label(ex) for ex in eval_examples]
-        metrics = compute_metrics_for_task(
-            bench_cfg["metric"], parsed_predictions, gold_labels
+        metrics = compute_metrics_for_task(bench_cfg["metric"], parsed_predictions, gold_labels)
+
+        # Step 6: Confidence intervals. Accuracy-like metrics on these
+        # (mostly small, <1000-item) benchmarks use the Wilson score
+        # interval (holds nominal coverage at small N — see
+        # bootstrap_ci.py's module docstring); everything else falls back to
+        # item-resampling bootstrap on the metric itself.
+        ci = None
+        if "n_correct" in metrics and "n_total" in metrics and metrics["n_total"] > 0:
+            ci = {
+                "method": "wilson",
+                **wilson_score_interval(metrics["n_correct"], metrics["n_total"]),
+            }
+        elif len(eval_examples) >= 5:
+            try:
+                boot = bootstrap_ci(
+                    parsed_predictions,
+                    gold_labels,
+                    lambda p, g, _m=bench_cfg["metric"]: compute_metrics_for_task(_m, p, g),
+                    n_bootstrap=2000,  # cheaper than the 10k default; this runs per-benchmark inline
+                    seed=self.seed,
+                )
+                primary = boot.get(bench_cfg["metric"])
+                if primary:
+                    ci = {"method": "bootstrap_percentile", **primary}
+            except Exception as e:  # noqa: BLE001 - CI is best-effort, never fail the run over it
+                logger.warning(f"  {bench_name}: CI computation failed ({e})")
+
+        # Step 7: Persist full per-item records (prompt hash, raw output,
+        # parsed prediction, gold, correctness) to a companion JSONL file.
+        # Previously only the first 10 raw predictions were kept anywhere,
+        # which made every downstream statistical claim (paired bootstrap,
+        # McNemar, per-item error analysis) structurally impossible to
+        # compute after the fact.
+        items_path = (
+            self.cache_dir
+            / f"{self._cache_key(model_id, bench_name, think_mode, bench_cfg, num_shots_override)}_items.jsonl"
         )
+        with open(items_path, "w") as f:
+            for ex, prompt, raw, stripped, parsed, gold in zip(
+                eval_examples,
+                prompts,
+                predictions,
+                stripped_outputs,
+                parsed_predictions,
+                gold_labels,
+            ):
+                correct = str(parsed).strip().upper() == str(gold).strip().upper()
+                f.write(
+                    json.dumps(
+                        {
+                            "prompt_hash": hashlib.md5(prompt.encode()).hexdigest(),
+                            "raw_output": raw,
+                            "stripped_output": stripped,
+                            "parsed_prediction": parsed
+                            if isinstance(parsed, (str, int, float, type(None)))
+                            else str(parsed),
+                            "gold_label": gold
+                            if isinstance(gold, (str, int, float, type(None)))
+                            else str(gold),
+                            "correct": correct,
+                        },
+                        default=str,
+                    )
+                    + "\n"
+                )
 
         result = {
             "task": bench_cfg["task"],
             "group": bench_cfg["group"],
             "metric_name": bench_cfg["metric"],
             "metrics": metrics,
+            "confidence_interval": ci,
             "num_examples": len(eval_examples),
             "inference_time_sec": inference_time,
             "inference_method": inference_method,
             "think_mode": think_mode,
             "num_few_shot": num_shots,
+            "items_path": str(items_path),
             # Save a sample of raw predictions for qualitative analysis
+            # (full per-item data lives in items_path above).
             "raw_predictions": predictions[:10],
         }
 
@@ -252,12 +430,22 @@ class BenchmarkRunner:
             Dict with 'model' and 'tokenizer' keys.
         """
         logger.info(f"Loading model for evaluation: {model_id}")
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        # Left padding is required for batched causal-LM generation: with
+        # right padding (the AutoTokenizer default), `output[input_len:]`
+        # (used below to isolate generated tokens) slices the wrong region
+        # for every non-longest prompt in the batch, since input_len is the
+        # same padded width for all rows but the real content starts at
+        # different offsets. Left padding keeps the real content
+        # right-aligned so new tokens always start exactly at position
+        # `input_len`.
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_id, trust_remote_code=True, padding_side="left"
+        )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
@@ -265,7 +453,10 @@ class BenchmarkRunner:
         return {"model": model, "tokenizer": tokenizer}
 
     def _inference_hf(
-        self, model_id: str, prompts: list[str], think_mode: str,
+        self,
+        model_id: str,
+        prompts: list[str],
+        think_mode: str,
         model_resources: dict | None = None,
     ) -> list[str]:
         """Run inference using HuggingFace Transformers (generate API).
@@ -292,11 +483,16 @@ class BenchmarkRunner:
             tokenizer = resources["tokenizer"]
             should_cleanup = True
 
+        max_prompt_length = self.config.get("evaluation", {}).get("max_prompt_length", 4096)
         predictions = []
         for i in tqdm(range(0, len(prompts), self.batch_size), desc="Inference"):
             batch = prompts[i : i + self.batch_size]
             inputs = tokenizer(
-                batch, return_tensors="pt", padding=True, truncation=True
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_prompt_length,
             ).to(model.device)
 
             with torch.no_grad():
@@ -308,8 +504,11 @@ class BenchmarkRunner:
                     pad_token_id=tokenizer.pad_token_id,
                 )
 
-            for j, output in enumerate(outputs):
-                input_len = inputs["input_ids"][j].shape[0]
+            # With left padding (see _load_model), every row's real content
+            # ends exactly at position `input_len`, so newly generated
+            # tokens always start there for every row in the batch.
+            input_len = inputs["input_ids"].shape[1]
+            for output in outputs:
                 new_tokens = output[input_len:]
                 pred = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 predictions.append(pred)
@@ -321,9 +520,7 @@ class BenchmarkRunner:
 
         return predictions
 
-    def _inference_vllm(
-        self, model_id: str, prompts: list[str], think_mode: str
-    ) -> list[str]:
+    def _inference_vllm(self, model_id: str, prompts: list[str], think_mode: str) -> list[str]:
         """Run inference using vLLM for 3-5x faster generation.
 
         vLLM uses PagedAttention and continuous batching for efficient
@@ -391,31 +588,40 @@ class BenchmarkRunner:
         for prompt, options in tqdm(
             zip(prompts, answer_options), total=len(prompts), desc="Logprob scoring"
         ):
-            # Tokenize the prompt
-            prompt_ids = tokenizer.encode(prompt, return_tensors="pt").to(model.device)
+            # Tokenize the prompt once; each option is scored by actually
+            # APPENDING its tokens and reading the model's own predicted
+            # log-probability for each of those tokens (teacher forcing).
+            # The previous version ran `model(prompt_ids)` — identical for
+            # every option, since the option was never appended to the
+            # input — so every option always got the exact same
+            # (prompt-only) next-token distribution; scoring was, in
+            # effect, "which option string starts with the single most
+            # likely next token", not "which option does the model prefer".
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
 
             best_option = options[0]
             best_logprob = float("-inf")
 
             for option in options:
-                # Tokenize the option (single token for letter answers)
                 option_ids = tokenizer.encode(option, add_special_tokens=False)
                 if not option_ids:
                     continue
 
-                # Get logits at the position after the prompt
+                full_ids = torch.tensor([prompt_ids + option_ids], device=model.device)
                 with torch.no_grad():
-                    outputs = model(prompt_ids)
-                    # Logits for the next token after the prompt
-                    next_token_logits = outputs.logits[0, -1, :]
+                    logits = model(full_ids).logits[0]  # [seq_len, vocab]
 
-                # Log-softmax for proper probability
-                log_probs = torch.nn.functional.log_softmax(next_token_logits, dim=-1)
-
-                # Sum log-probs of all tokens in the option
-                option_logprob = sum(
-                    log_probs[tid].item() for tid in option_ids
-                ) / len(option_ids)  # Length-normalize
+                # Position i's logits predict token i+1. To score the
+                # option's tokens, look at logits starting one position
+                # before the option begins (which predicts the option's
+                # first token) through one before the option ends.
+                start = len(prompt_ids) - 1
+                end = len(prompt_ids) + len(option_ids) - 1
+                option_logits = logits[start:end]  # [len(option_ids), vocab]
+                log_probs = torch.nn.functional.log_softmax(option_logits, dim=-1)
+                option_ids_t = torch.tensor(option_ids, device=model.device)
+                token_logps = log_probs[torch.arange(len(option_ids)), option_ids_t]
+                option_logprob = (token_logps.sum() / len(option_ids)).item()  # length-normalized
 
                 if option_logprob > best_logprob:
                     best_logprob = option_logprob
@@ -425,13 +631,46 @@ class BenchmarkRunner:
 
         return predictions
 
-    def _cache_key(self, model_id: str, bench_name: str, think_mode: str) -> str:
+    def _cache_key(
+        self,
+        model_id: str,
+        bench_name: str,
+        think_mode: str,
+        bench_cfg: dict | None = None,
+        num_shots_override: int | None = None,
+    ) -> str:
         """Generate deterministic cache key from evaluation parameters.
 
-        The key includes the seed so that changing the seed invalidates
-        the cache (different random states → different few-shot examples).
+        Includes every setting that changes the actual predictions, not
+        just model/benchmark/think_mode/seed. Previously, editing
+        `num_shots`, `max_new_tokens`, `temperature`, `use_logprob`, or even
+        the benchmark's own `hub_id`/`subset`/`max_samples` silently reused
+        a stale cached result computed under the OLD settings — despite
+        docs/EVAL_PROTOCOL.md's claim that the cache invalidates whenever
+        the generation config changes.
         """
-        key_str = f"{model_id}|{bench_name}|{think_mode}|{self.seed}"
+        bench_cfg = bench_cfg or {}
+        key_parts = [
+            model_id,
+            bench_name,
+            think_mode,
+            str(self.seed),
+            str(
+                num_shots_override
+                if num_shots_override is not None
+                else bench_cfg.get("num_shots", 0)
+            ),
+            str(self.max_new_tokens),
+            str(self.temperature),
+            str(self.batch_size),
+            str(self.config.get("evaluation", {}).get("use_logprob", False)),
+            str(self.use_vllm),
+            str(bench_cfg.get("hub_id")),
+            str(bench_cfg.get("subset")),
+            str(bench_cfg.get("max_samples")),
+            str(bench_cfg.get("metric")),
+        ]
+        key_str = "|".join(key_parts)
         return hashlib.md5(key_str.encode()).hexdigest()
 
     def _load_cache(self, cache_key: str) -> dict | None:
@@ -463,28 +702,62 @@ def run_evaluation(config_path: str, model_id: str | None = None) -> dict[str, A
     config = load_config(config_path)
     runner = BenchmarkRunner(config)
 
-    all_results = []
-
-    if model_id:
-        # Evaluate a single specified model
-        result = runner.run_all(model_id, model_id.split("/")[-1])
-        all_results.append(result)
-    else:
-        # Evaluate all models from config
-        for model_cfg in config.get("models_to_evaluate", []):
-            mid = model_cfg["id"]
-            name = model_cfg.get("name", mid)
-            # Skip models that aren't available (local paths that don't exist)
-            if not Path(mid).exists() and "/" not in mid:
-                logger.warning(f"Skipping {mid}: not found")
-                continue
-            result = runner.run_all(mid, name)
-            all_results.append(result)
-
-    # Save consolidated results
     output_dir = Path(config.get("report", {}).get("output_dir", "reports"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / "eval_results.json", "w") as f:
+    results_path = output_dir / "eval_results.json"
+
+    # Load any existing results so a single-model run (or a resumed
+    # multi-model run) MERGES in rather than clobbering. Previously every
+    # call to run_evaluation overwrote eval_results.json wholesale, so
+    # scripts/run_baselines.sh's loop of per-model `--model` invocations
+    # left only the LAST model's results on disk.
+    all_results = []
+    if results_path.exists():
+        with open(results_path) as f:
+            all_results = json.load(f)
+    results_by_model = {r["model_id"]: r for r in all_results}
+
+    def _run_one(
+        mid: str, name: str, is_chat_model: bool = True, num_shots_override: int | None = None
+    ):
+        result = runner.run_all(
+            mid, name, is_chat_model=is_chat_model, num_shots_override=num_shots_override
+        )
+        results_by_model[mid] = result
+
+    if model_id:
+        # Evaluate a single specified model. is_chat_model defaults to True
+        # (the common case); use the config-driven path below to control it
+        # explicitly for base/non-chat models.
+        model_cfg = next(
+            (m for m in config.get("models_to_evaluate", []) if m["id"] == model_id), {}
+        )
+        _run_one(
+            model_id,
+            model_cfg.get("name", model_id.split("/")[-1]),
+            is_chat_model=model_cfg.get("is_chat_model", True),
+            num_shots_override=model_cfg.get("num_shots_override"),
+        )
+    else:
+        # Evaluate all enabled models from config
+        for model_cfg in config.get("models_to_evaluate", []):
+            if not model_cfg.get("enabled", True):
+                logger.info(f"Skipping {model_cfg['id']}: enabled=false in config")
+                continue
+            mid = model_cfg["id"]
+            name = model_cfg.get("name", mid)
+            if _is_unavailable_local_checkpoint(mid):
+                logger.warning(f"Skipping {mid}: local checkpoint not found (train it first)")
+                continue
+            _run_one(
+                mid,
+                name,
+                is_chat_model=model_cfg.get("is_chat_model", True),
+                num_shots_override=model_cfg.get("num_shots_override"),
+            )
+
+    all_results = list(results_by_model.values())
+    with open(results_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
 
     return {"results": all_results}

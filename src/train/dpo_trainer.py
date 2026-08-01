@@ -27,16 +27,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from datasets import Dataset, load_dataset
+from peft import get_peft_model, prepare_model_for_kbit_training
 from trl import DPOConfig, DPOTrainer
-from datasets import load_dataset, Dataset
 
 from src.data.instruction_data_builder import format_gemma4_chat
 from src.train.callbacks import LocalMetricsCallback
+from src.train.peft_factories import create_peft_config
 from src.utils.checkpointing import save_training_state
 from src.utils.config_utils import load_config
 from src.utils.hf_utils import load_model_for_training, load_tokenizer
-from src.utils.logging_utils import MetricsLogger, get_logger
+from src.utils.logging_utils import MetricsLogger, get_logger, resolve_report_to
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
@@ -143,25 +144,25 @@ class DPOTrainerWrapper:
 
         # Use SFT checkpoint as base for DPO (pipeline: CPT → SFT → DPO)
         base_checkpoint = self.config.get("base_checkpoint")
-        model_id = base_checkpoint if base_checkpoint and Path(base_checkpoint).exists() else model_cfg["model"]["base_id"]
+        model_id = (
+            base_checkpoint
+            if base_checkpoint and Path(base_checkpoint).exists()
+            else model_cfg["model"]["base_id"]
+        )
 
         tokenizer = load_tokenizer(model_id)
         use_lora = self.train_cfg.get("use_lora", True)
 
-        model = load_model_for_training(model_id, use_lora=use_lora, quantize=use_lora, model_config=model_cfg)
+        model = load_model_for_training(
+            model_id, use_lora=use_lora, quantize=use_lora, model_config=model_cfg
+        )
 
-        # Apply LoRA (smaller rank than SFT since DPO is a refinement stage)
+        # Apply LoRA/DoRA (smaller rank than SFT since DPO is a refinement stage)
         if use_lora:
             model = prepare_model_for_kbit_training(model)
             lora_cfg = self.config.get("lora", {})
-            peft_config = LoraConfig(
-                r=lora_cfg.get("r", 16),
-                lora_alpha=lora_cfg.get("lora_alpha", 32),
-                lora_dropout=lora_cfg.get("lora_dropout", 0.05),
-                # Only attention layers for DPO (lighter than SFT)
-                target_modules=lora_cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-                task_type="CAUSAL_LM",
-            )
+            peft_method = self.train_cfg.get("peft_method", "lora")
+            peft_config = create_peft_config(peft_method, lora_cfg)
             model = get_peft_model(model, peft_config)
 
         # Load preference data
@@ -188,10 +189,13 @@ class DPOTrainerWrapper:
             loss_type=self.dpo_cfg.get("loss_type", "sigmoid"),  # DPO loss variant
             max_prompt_length=self.dpo_cfg.get("max_prompt_length", 1024),
             max_length=self.dpo_cfg.get("max_length", 2048),
-            logging_steps=10,
+            logging_steps=self.config.get("logging", {}).get("logging_steps", 10),
             save_steps=self.config.get("checkpointing", {}).get("save_steps", 500),
+            save_total_limit=self.config.get("checkpointing", {}).get("save_total_limit", 3),
+            weight_decay=self.train_cfg.get("weight_decay", 0.0),
+            max_grad_norm=self.train_cfg.get("max_grad_norm", 1.0),
             seed=self.seed,
-            report_to=["none"],
+            report_to=resolve_report_to(self.config.get("logging", {}).get("report_to")),
         )
 
         # Initialize DPO trainer
@@ -207,13 +211,15 @@ class DPOTrainerWrapper:
         logger.info("Starting DPO training...")
         train_result = trainer.train()
 
-        # Save final aligned model
+        # Save final aligned model. Only the main process writes files (see
+        # cpt_trainer.py's save block for why).
         final_dir = self.output_dir / "final"
-        if use_lora:
-            model.save_pretrained(final_dir)
-        else:
-            trainer.save_model(final_dir)
-        tokenizer.save_pretrained(final_dir)
+        if trainer.is_world_process_zero():
+            if use_lora:
+                model.save_pretrained(final_dir)
+            else:
+                trainer.save_model(final_dir)
+            tokenizer.save_pretrained(final_dir)
 
         # Record training state
         elapsed = time.time() - start_time
@@ -221,8 +227,10 @@ class DPOTrainerWrapper:
             "elapsed_seconds": elapsed,
             "global_step": train_result.global_step,
             "training_loss": train_result.training_loss,
+            "base_model_id": model_id,
         }
-        save_training_state(final_dir, state)
+        if trainer.is_world_process_zero():
+            save_training_state(final_dir, state)
         logger.info(f"DPO completed in {elapsed:.1f}s")
         return state
 
@@ -230,6 +238,7 @@ class DPOTrainerWrapper:
 def main():
     """CLI entry point for DPO training."""
     import argparse
+
     parser = argparse.ArgumentParser(description="Run DPO Training")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()

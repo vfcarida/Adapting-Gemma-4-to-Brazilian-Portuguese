@@ -63,7 +63,9 @@ benchmarks:
     group: "brasil_geral"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/bluex"
+    # Se7enB/bluex was fabricated. Replaced with eduagarcia-temp/BLUEX_without_images
+    # (public, split "train", 724 rows, no images — better for text-only eval).
+    hub_id: "eduagarcia-temp/BLUEX_without_images"
     enabled: true
 
   # =========================================================================
@@ -74,7 +76,8 @@ benchmarks:
     group: "semantica"
     metric: "accuracy"
     num_shots: 5
-    hub_id: "assin2"
+    # "assin2" resolves via a Hub redirect; use the canonical id directly.
+    hub_id: "nilc-nlp/assin2"
     enabled: true
 
   assin2_sts:
@@ -82,7 +85,8 @@ benchmarks:
     group: "semantica"
     metric: "pearson"
     num_shots: 5
-    hub_id: "assin2"
+    # "assin2" resolves via a Hub redirect; use the canonical id directly.
+    hub_id: "nilc-nlp/assin2"
     enabled: true
 
   copa_pt:
@@ -90,7 +94,12 @@ benchmarks:
     group: "semantica"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/copa_pt"
+    # Se7enB/copa_pt was fabricated. Replaced with PORTULAN/extraglue,
+    # config "copa_pt-BR" (train 400 / val 100 / test 500). Loaded from the
+    # "validation" split in copa_pt.py: the "test" split has masked (-1)
+    # labels for every row (GLUE/SuperGLUE test-label-hiding convention).
+    hub_id: "PORTULAN/extraglue"
+    subset: "copa_pt-BR"
     enabled: true
 
   boolq_pt:
@@ -98,7 +107,37 @@ benchmarks:
     group: "semantica"
     metric: "boolq_accuracy"
     num_shots: 5
-    hub_id: "Se7enB/boolq_pt"
+    # Se7enB/boolq_pt was fabricated. Replaced with PORTULAN/extraglue,
+    # config "boolq_pt-BR" (train 9427 / val 3270 / test 3245). Loaded from
+    # the "validation" split (see copa_pt note above re: masked test labels).
+    hub_id: "PORTULAN/extraglue"
+    subset: "boolq_pt-BR"
+    enabled: true
+
+  mrpc_pt:
+    task: "mrpc_pt"
+    group: "semantica"
+    metric: "accuracy"
+    num_shots: 5
+    # Previously dead/orphaned (not referenced here, no default hub_id in
+    # mrpc_pt.py). Real dataset: PORTULAN/extraglue, config "mrpc_pt-BR"
+    # (train 3668 / val 408 / test 1725). Unlike copa/boolq/rte, its "test"
+    # split does carry real (non-masked) labels.
+    hub_id: "PORTULAN/extraglue"
+    subset: "mrpc_pt-BR"
+    enabled: true
+
+  rte_pt:
+    task: "rte_pt"
+    group: "semantica"
+    metric: "accuracy"
+    num_shots: 5
+    # Previously dead/orphaned (not referenced here, no default hub_id in
+    # rte_pt.py). Real dataset: PORTULAN/extraglue, config "rte_pt-BR"
+    # (train 2490 / val 277 / test 3000). Loaded from "validation" (its
+    # "test" split has masked -1 labels, like copa/boolq).
+    hub_id: "PORTULAN/extraglue"
+    subset: "rte_pt-BR"
     enabled: true
 
   # =========================================================================
@@ -109,7 +148,10 @@ benchmarks:
     group: "classificacao_social"
     metric: "macro_f1"
     num_shots: 5
-    hub_id: "Se7enB/HateBR"
+    # Se7enB/HateBR was fabricated. Replaced with ruanchaves/hatebr (real;
+    # train 4480 / val 1120 / test 1400). Its main branch uses a legacy
+    # loading script (needs the refs/convert/parquet revision — see hatebr.py).
+    hub_id: "ruanchaves/hatebr"
     enabled: true
 
   tweet_sentbr:
@@ -117,7 +159,9 @@ benchmarks:
     group: "classificacao_social"
     metric: "macro_f1"
     num_shots: 5
-    hub_id: "Se7enB/TweetSentBR"
+    # Se7enB/TweetSentBR was fabricated. Replaced with
+    # eduagarcia/tweetsentbr_fewshot (real; train=75 few-shot pool, test=2010).
+    hub_id: "eduagarcia/tweetsentbr_fewshot"
     enabled: true
 
   # =========================================================================
@@ -128,7 +172,9 @@ benchmarks:
     group: "juridico"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/oab_exams"
+    # Se7enB/oab_exams was fabricated. Replaced with eduagarcia/oab_exams
+    # (real; split "train", 2210 rows).
+    hub_id: "eduagarcia/oab_exams"
     rubric_mode: false
     enabled: true
 
@@ -137,7 +183,11 @@ benchmarks:
     group: "juridico"
     metric: "entity_micro_f1"
     num_shots: 0
-    hub_id: "HuggingFaceGECLNLP/lener_br"
+    # HuggingFaceGECLNLP/lener_br was fabricated. Replaced with peluz/lener_br
+    # (real; train 7828 / val 1177 / test 1390). Loaded via the
+    # refs/convert/parquet revision (main branch uses a legacy loading
+    # script no longer executed by datasets>=3.0 — see lener_br.py).
+    hub_id: "peluz/lener_br"
     enabled: true
 
   legalbench_br:
@@ -145,7 +195,16 @@ benchmarks:
     group: "juridico"
     metric: "accuracy"
     num_shots: 5
-    hub_id: "eduagarcia/legalbench_br"
+    # eduagarcia/legalbench_br does not exist; no direct Brazilian-Portuguese
+    # LegalBench equivalent is published on the Hub. A second OAB-based task
+    # would be redundant with oab_bench, so instead this is wired to
+    # eduagarcia/portuguese_benchmark, config "brazilian_court_decisions_judgment"
+    # (real Brazilian-legal-domain classification: acórdão judgment outcome,
+    # 3 classes no/partial/yes, split "test", 405 rows) — see legalbench_br.py.
+    # (Closest EU-Portuguese, non-BR, alternative if ever needed instead:
+    # BeatrizCanaverde/LegalBench.PT.)
+    hub_id: "eduagarcia/portuguese_benchmark"
+    subset: "brazilian_court_decisions_judgment"
     enabled: true
 
   # =========================================================================
@@ -156,7 +215,9 @@ benchmarks:
     group: "cultura"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/broverbs"
+    # Se7enB/broverbs was fabricated. Replaced with Tropic-AI/BRoverbs (real;
+    # 193 proverbs / 579 stories; splits "history_to_proverb"/"proverb_to_history").
+    hub_id: "Tropic-AI/BRoverbs"
     enabled: true
 
   capitu:
@@ -164,8 +225,12 @@ benchmarks:
     group: "cultura"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/capitu"
-    enabled: true
+    # Se7enB/capitu was fabricated, and no public HF dataset exists for CAPITU
+    # (paper arXiv:2603.22576, code at github.com/maritaca-ai/capitu, no HF
+    # dataset). Disabled by default. To enable, obtain the data from the
+    # GitHub repo directly and set `local_path` to a local JSONL file
+    # (BaseTask.load_data already supports this fallback).
+    enabled: false
 
   # =========================================================================
   # GRUPO: Raciocínio Matemático
@@ -175,8 +240,9 @@ benchmarks:
     group: "raciocinio"
     metric: "accuracy"
     num_shots: 0
-    hub_id: "Se7enB/math_pt"
-    enabled: true
+    # Se7enB/math_pt was fabricated, and no verified Brazilian-Portuguese
+    # math benchmark was found on the Hub. Disabled by default.
+    enabled: false
 
   # =========================================================================
   # GRUPO: Audiências Públicas / Domínio Público
@@ -186,7 +252,11 @@ benchmarks:
     group: "dominio_publico"
     metric: "macro_f1"
     num_shots: 5
-    hub_id: "Se7enB/publichearing_br"
+    # Se7enB/publichearing_br was fabricated, but a real dataset exists:
+    # unicamp-dl/PublicHearingBR (206 public-hearing transcripts). The repo
+    # mixes two incompatible JSONL files; publichearing_br.py selects the
+    # summarization (LDS) file explicitly via `data_files`.
+    hub_id: "unicamp-dl/PublicHearingBR"
     enabled: true
 
   # =========================================================================
@@ -197,8 +267,13 @@ benchmarks:
     group: "seguranca"
     metric: "refusal_rate"
     num_shots: 0
-    hub_id: "Se7enB/donotanswer_pt"
-    enabled: true
+    # Se7enB/donotanswer_pt was fabricated, and no public HF dataset exists
+    # for a Brazilian-Portuguese DoNotAnswer (a CLARIN-PT-LDB translation is
+    # referenced in arXiv:2603.12872 but isn't published as a standalone HF
+    # dataset). Disabled by default. LibrAI/do-not-answer (English,
+    # cc-by-nc-sa) could be used as an approximate fallback signal, but is
+    # not wired in automatically here (language mismatch).
+    enabled: false
 
   # =========================================================================
   # GRUPO: Exploratórios (habilitados mas não obrigatórios)
@@ -325,7 +400,10 @@ models_to_evaluate:
 report:
   output_dir: "reports"
   formats: ["csv", "markdown", "json"]
-  bootstrap_n: 1000
+  # src/eval/bootstrap_ci.py now defaults to 10000 resamples (percentile/BCa
+  # interval endpoints need many more resamples than a standard-error
+  # estimate does — see that module's docstring); kept in sync here.
+  bootstrap_n: 10000
   confidence_level: 0.95
   generate_plots: true
   plot_types: ["heatmap", "radar", "bar", "scaling_curves", "retention_plot"]

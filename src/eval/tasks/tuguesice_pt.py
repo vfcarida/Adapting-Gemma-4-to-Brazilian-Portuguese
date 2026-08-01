@@ -1,6 +1,12 @@
-"""Tuguesice-PT task."""
+"""Tuguesice-PT task.
+
+Unimplemented/unverified benchmark: "Tuguesice-PT" does not correspond to
+any known public dataset (zero hits, confirmed fabricated with no real
+alternative found) and this task is NOT wired into configs/eval/benchmarks.yaml.
+"""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 

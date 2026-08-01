@@ -1,6 +1,5 @@
 """Build instruction datasets for SFT with proper chat formatting."""
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +9,22 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Gemma 4 chat template
-GEMMA4_USER_PREFIX = "<start_of_turn>user\n"
-GEMMA4_USER_SUFFIX = "<end_of_turn>\n"
-GEMMA4_MODEL_PREFIX = "<start_of_turn>model\n"
-GEMMA4_MODEL_SUFFIX = "<end_of_turn>\n"
+# Gemma 4 chat template markers, verified LIVE against the real tokenizer
+# (google/gemma-4-E2B-it, template published 2026-07-09): turns use the
+# dedicated special tokens `<|turn>role\n` / `<turn|>\n` — NOT Gemma 2/3's
+# `<start_of_turn>role\n` / `<end_of_turn>\n`, which aren't even special
+# tokens in Gemma 4's vocabulary (they fragment into 7 ordinary subword
+# tokens each). Thinking content uses the dedicated special tokens
+# `<|channel>thought\n ... \n<channel|>`, not `<think>...</think>`.
+GEMMA4_USER_PREFIX = "<|turn>user\n"
+GEMMA4_USER_SUFFIX = "<turn|>\n"
+GEMMA4_MODEL_PREFIX = "<|turn>model\n"
+GEMMA4_MODEL_SUFFIX = "<turn|>\n"
+# Generic turn-start marker shared by every role (user/model/system). Used to
+# find the boundary of the NEXT turn (of any role) when unmasking a given
+# assistant response, so a multi-turn unmask range never bleeds into the
+# following user turn.
+GEMMA4_TURN_START = "<|turn>"
 
 
 def format_gemma4_chat(
@@ -24,12 +34,19 @@ def format_gemma4_chat(
 ) -> str:
     """Format messages using Gemma 4 chat template.
 
+    Note: this does NOT prepend a literal "<bos>" string. The tokenizer is
+    expected to add the BOS token itself via `add_special_tokens=True`
+    (the HF default) when encoding the returned string. Prepending a literal
+    "<bos>" here AND letting the tokenizer add special tokens would produce
+    a duplicate BOS token in every example.
+
     Args:
         messages: List of {"role": "user"|"model", "content": "..."} dicts
         add_generation_prompt: Whether to add model turn prefix at end
-        use_think: Whether to add <think> token after model prefix
+        use_think: Whether to wrap the model turn's content in a
+            "<|channel>thought\n ... \n<channel|>" reasoning block
     """
-    formatted = "<bos>"
+    formatted = ""
     for msg in messages:
         role = msg["role"]
         content = msg["content"]
@@ -38,13 +55,13 @@ def format_gemma4_chat(
             formatted += f"{GEMMA4_USER_PREFIX}{content}{GEMMA4_USER_SUFFIX}"
         elif role in ("model", "assistant"):
             if use_think:
-                formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
+                formatted += f"{GEMMA4_MODEL_PREFIX}<|channel>thought\n{content}\n<channel|>{GEMMA4_MODEL_SUFFIX}"
             else:
                 formatted += f"{GEMMA4_MODEL_PREFIX}{content}{GEMMA4_MODEL_SUFFIX}"
 
     if add_generation_prompt:
         if use_think:
-            formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n"
+            formatted += f"{GEMMA4_MODEL_PREFIX}<|channel>thought\n"
         else:
             formatted += GEMMA4_MODEL_PREFIX
 
@@ -59,6 +76,9 @@ class InstructionDataBuilder:
         self.sft_cfg = config.get("sft", {})
         self.use_think = self.sft_cfg.get("use_think_tokens", False)
         self.max_seq_length = self.sft_cfg.get("max_seq_length", 4096)
+        # Configured seed (experiment.seed), never a hardcoded value, so
+        # shuffling is reproducible with the rest of the experiment.
+        self.seed = config.get("experiment", {}).get("seed", 42)
 
     def load_datasets(self) -> Dataset:
         """Load and merge all configured instruction datasets."""
@@ -112,7 +132,6 @@ class InstructionDataBuilder:
     def _normalize_columns(self, ds: Dataset) -> Dataset:
         """Normalize dataset columns to standard format."""
         # Handle various column naming conventions
-        col_map = {}
         columns = ds.column_names
 
         if "instruction" in columns and "output" in columns:
@@ -127,6 +146,7 @@ class InstructionDataBuilder:
                         {"role": "model", "content": example["output"]},
                     ]
                 }
+
             return ds.map(convert_alpaca, remove_columns=columns)
 
         elif "conversations" in columns:
@@ -137,6 +157,7 @@ class InstructionDataBuilder:
                     role = "user" if turn["from"] in ("human", "user") else "model"
                     messages.append({"role": role, "content": turn["value"]})
                 return {"messages": messages}
+
             return ds.map(convert_sharegpt, remove_columns=columns)
 
         elif "messages" in columns:
@@ -144,6 +165,7 @@ class InstructionDataBuilder:
             return ds
 
         elif "prompt" in columns and "response" in columns:
+
             def convert_prompt_response(example):
                 return {
                     "messages": [
@@ -151,6 +173,7 @@ class InstructionDataBuilder:
                         {"role": "model", "content": example["response"]},
                     ]
                 }
+
             return ds.map(convert_prompt_response, remove_columns=columns)
 
         else:
@@ -158,19 +181,26 @@ class InstructionDataBuilder:
             return ds
 
     def _weighted_merge(self, datasets_weights: list[tuple[Dataset, float]]) -> Dataset:
-        """Merge datasets with weighting via sampling."""
-        total_samples = sum(len(ds) for ds, _ in datasets_weights)
+        """Merge datasets with weighted proportional random sampling.
+
+        For each source dataset, shuffles it (using the configured seed)
+        and then truncates to int(len(ds) * weight) rows. Shuffling before
+        truncating is what makes this an actual proportional *sample* of
+        each source rather than a deterministic prefix (the first N rows)
+        of it, which is what a plain `range(n_samples)` selection would be.
+        """
         merged = []
 
         for ds, weight in datasets_weights:
             n_samples = int(len(ds) * weight)
             if n_samples > len(ds):
                 n_samples = len(ds)
+            shuffled = ds.shuffle(seed=self.seed)
             indices = list(range(n_samples))
-            merged.append(ds.select(indices))
+            merged.append(shuffled.select(indices))
 
         result = concatenate_datasets(merged)
-        result = result.shuffle(seed=42)
+        result = result.shuffle(seed=self.seed)
         logger.info(f"Merged instruction dataset: {len(result)} samples")
         return result
 
@@ -196,16 +226,15 @@ class InstructionDataBuilder:
 
             if self.sft_cfg.get("train_on_completions_only", True):
                 # Mask everything before the model response
-                response_template = self.sft_cfg.get(
-                    "response_template", GEMMA4_MODEL_PREFIX
-                )
-                response_token_ids = tokenizer.encode(
-                    response_template, add_special_tokens=False
-                )
+                response_template = self.sft_cfg.get("response_template", GEMMA4_MODEL_PREFIX)
+                response_token_ids = tokenizer.encode(response_template, add_special_tokens=False)
+                # Generic turn-start marker (any role) used to bound each
+                # unmasked response so it never bleeds into the next turn.
+                turn_start_token_ids = tokenizer.encode(GEMMA4_TURN_START, add_special_tokens=False)
 
                 # Find response start positions and mask prefix
                 labels = self._mask_prompt_tokens(
-                    input_ids, labels, response_token_ids
+                    input_ids, labels, response_token_ids, turn_start_token_ids
                 )
 
             tokenized["labels"] = labels
@@ -223,6 +252,7 @@ class InstructionDataBuilder:
         input_ids: list[int],
         labels: list[int],
         response_token_ids: list[int],
+        turn_start_token_ids: list[int] | None = None,
     ) -> list[int]:
         """Mask prompt tokens in labels (set to -100).
 
@@ -230,9 +260,13 @@ class InstructionDataBuilder:
         only trains on those tokens. Everything else (system prompt, user
         turns, template tokens) is masked.
 
-        Strategy: unmask from each response_template end until the start
-        of the next response_template (which marks the beginning of a new
-        user turn in multi-turn conversations).
+        Strategy: mask everything by default, then for each occurrence of
+        the response_template (model turn start), unmask from right after
+        that marker until the start of the NEXT `<|turn>` marker of
+        ANY role (user/model/system) — or end of sequence if there is none.
+        Using the generic turn-start marker (rather than only the next model
+        turn) ensures the intervening user turn in a multi-turn conversation
+        is never accidentally included in the unmasked (trained-on) region.
         """
         IGNORE_INDEX = -100
         masked_labels = [IGNORE_INDEX] * len(labels)
@@ -246,21 +280,42 @@ class InstructionDataBuilder:
                 template_starts.append(i)
 
         if not template_starts:
-            # If we can't find the template, train on everything
+            # If we can't find the template, we can't determine which
+            # tokens are the model's response, so we fall back to training
+            # on the whole sequence. Surface this loudly: it silently trains
+            # on the full prompt (including system/user turns) instead of
+            # completions only, which usually indicates a response_template
+            # / tokenizer mismatch.
+            logger.warning(
+                "response_template não encontrado nos input_ids; "
+                "treinando na sequência completa (sem mascaramento de "
+                "prompt). Verifique se `sft.response_template` corresponde "
+                "exatamente ao texto emitido por format_gemma4_chat."
+            )
             return labels
 
-        # For each model response: unmask from end of template to start of next template
-        for idx, tstart in enumerate(template_starts):
+        # Find all occurrences of the generic "<|turn>" marker (any role).
+        # This is a superset of `template_starts` since the model template
+        # itself begins with this marker.
+        turn_starts: list[int] = []
+        if turn_start_token_ids:
+            turn_len = len(turn_start_token_ids)
+            for i in range(len(input_ids) - turn_len + 1):
+                if input_ids[i : i + turn_len] == turn_start_token_ids:
+                    turn_starts.append(i)
+
+        # For each model response: unmask from end of template until the
+        # start of the next turn of ANY role, or end of sequence.
+        for tstart in template_starts:
             response_begin = tstart + template_len  # first token of model response
 
-            if idx + 1 < len(template_starts):
-                # End before the next template (which is user turn + next model prefix)
-                response_end = template_starts[idx + 1]
-            else:
-                # Last response: goes until end of sequence
-                response_end = len(input_ids)
+            response_end = len(input_ids)
+            for pos in turn_starts:
+                if pos > tstart:
+                    response_end = pos
+                    break
 
-            # Unmask model response tokens (includes end_of_turn as part of response)
+            # Unmask model response tokens (includes the closing <turn|> as part of the response)
             for j in range(response_begin, response_end):
                 masked_labels[j] = labels[j]
 

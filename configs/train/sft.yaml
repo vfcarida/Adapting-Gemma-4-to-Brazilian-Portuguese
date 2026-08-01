@@ -36,21 +36,25 @@ lora:
   bias: "none"
 
 sft:
-  # Instruction data sources (in priority order)
+  # Instruction data sources (in priority order). Both are real, ungated,
+  # Alpaca-schema (instruction/input/output) Portuguese datasets verified to
+  # exist on the HF Hub — InstructionDataBuilder._normalize_columns already
+  # auto-detects this schema.
   datasets:
-    - hub_id: "Se7enB/Gemma-Instruct-Portuguese"
-      weight: 0.5
-    - hub_id: "cnmoro/Se7enB-Gemma-Instruct-Portuguese-translated-v2"
+    - hub_id: "rhaymison/superset"  # ~100K-1M rows, no restrictive license tag
+      weight: 0.7
+    - hub_id: "dominguesm/alpaca-data-pt-br"  # translated Alpaca, cc-by-nc-4.0
       weight: 0.3
-    - hub_id: null  # Placeholder for custom synthetic data
-      path: "data/synthetic_ptbr_instructions.jsonl"
-      weight: 0.2
 
   max_seq_length: 4096
   packing: false
   train_on_completions_only: true
   use_think_tokens: false  # Control thinking mode
-  response_template: "<start_of_turn>model\n"
+  # Real Gemma 4 model-turn marker (verified live against the tokenizer's
+  # own chat template — see src/data/instruction_data_builder.py's
+  # GEMMA4_MODEL_PREFIX docstring). NOT "<start_of_turn>model\n", which is
+  # Gemma 2/3's format.
+  response_template: "<|turn>model\n"
 
   # Chat template format
   format: "gemma4"
@@ -67,7 +71,12 @@ checkpointing:
 
 logging:
   logging_steps: 10
-  report_to: ["json"]
+  # "json" is not a valid transformers integration (metrics are already
+  # persisted separately via MetricsLogger to log_file below as JSONL).
+  # Add "wandb"/"tensorboard" here if those packages are installed —
+  # resolve_report_to() in src/utils/logging_utils.py drops any requested
+  # backend that isn't actually usable instead of crashing.
+  report_to: ["none"]
   log_file: "outputs/sft/train_log.jsonl"
 
 output:

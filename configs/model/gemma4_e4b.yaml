@@ -32,15 +32,15 @@ tokenizer:
 # Estas constantes são fallback caso apply_chat_template não esteja disponível
 chat_template_fallback:
   bos_token: "<bos>"
-  user_prefix: "<start_of_turn>user\n"
-  user_suffix: "<end_of_turn>\n"
-  model_prefix: "<start_of_turn>model\n"
-  model_suffix: "<end_of_turn>\n"
-  system_prefix: "<start_of_turn>system\n"
-  system_suffix: "<end_of_turn>\n"
+  user_prefix: "<|turn>user\n"
+  user_suffix: "<turn|>\n"
+  model_prefix: "<|turn>model\n"
+  model_suffix: "<turn|>\n"
+  system_prefix: "<|turn>system\n"
+  system_suffix: "<turn|>\n"
   # Canal de pensamento
-  think_open: "<think>\n"
-  think_close: "</think>\n"
+  think_open: "<|think|>\n"
+  think_close: "<channel|>\n"
 
 # Configuração de pensamento (think mode)
 thinking:

@@ -5,6 +5,11 @@ from typing import Any
 
 import yaml
 
+# Repository root, resolved from this file's location (src/utils/config_utils.py),
+# used as a third resolution candidate so configs load correctly regardless of
+# the caller's current working directory (e.g. a Colab notebook or a test runner).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def load_config(path: str | Path) -> dict[str, Any]:
     """Load a YAML config file, resolving nested config references."""
@@ -20,11 +25,21 @@ def load_config(path: str | Path) -> dict[str, Any]:
         if key in config and isinstance(config[key], str):
             nested_path = Path(config[key])
             if not nested_path.is_absolute():
-                # Try relative to parent dir first, then relative to cwd
-                candidate = path.parent / nested_path
-                if not candidate.exists():
-                    candidate = Path.cwd() / nested_path
-                nested_path = candidate
+                # Try, in order: relative to the parent config's directory,
+                # relative to the current working directory, and relative to
+                # the repository root. This makes config resolution independent
+                # of the caller's cwd (train configs reference paths like
+                # "configs/model/gemma4_e4b.yaml" as if run from repo root).
+                for candidate in (
+                    path.parent / nested_path,
+                    Path.cwd() / nested_path,
+                    _REPO_ROOT / nested_path,
+                ):
+                    if candidate.exists():
+                        nested_path = candidate
+                        break
+                else:
+                    nested_path = path.parent / nested_path
             config[key] = load_config(nested_path)
 
     return config
@@ -33,6 +48,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def merge_configs(base: dict, override: dict) -> dict:
     """Deep merge override into base config. Returns new dict (no mutation of base)."""
     import copy
+
     result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):

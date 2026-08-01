@@ -1,0 +1,65 @@
+# =============================================================================
+# Configuração do Modelo — Gemma 4 E2B (Trilha Colab / GPU única)
+# =============================================================================
+# Modelo: google/gemma-4-E2B (base) / google/gemma-4-E2B-it (instruct)
+# Arquitetura: ~2.3B parâmetros efetivos (hidden_size=1536, 35 camadas)
+# Verificado ao vivo no HF Hub: não-gated, Apache 2.0.
+# Uso: menor modelo real da família Gemma 4 — recomendado para GPU única
+# (T4 16GB / L4 24GB / A100 40GB) em ambientes com VRAM/tempo limitados
+# como o Google Colab. Ver configs/model/gemma4_e4b.yaml para a trilha
+# piloto "completa" (mais VRAM/tempo).
+
+model:
+  base_id: "google/gemma-4-E2B"
+  instruct_id: "google/gemma-4-E2B-it"
+  family: "gemma4"
+  architecture: "dense"
+  params_total: "2.3B"
+  dtype: "bfloat16"
+  # Gemma 4 E2B/E4B suportam 128K de contexto nativamente, mas para CPT em
+  # GPU única priorizamos throughput/VRAM: sequências mais curtas cabem mais
+  # exemplos por batch. Aumente se tiver VRAM sobrando.
+  max_seq_length: 2048
+  # "sdpa" evita a compilação do flash-attn (que tipicamente falha ou demora
+  # vários minutos em ambientes efêmeros como o Colab); hf_utils.py já cai
+  # para sdpa automaticamente se flash-attn não estiver instalado, mas
+  # declarar explicitamente evita a tentativa de import e o warning.
+  attn_implementation: "sdpa"
+  trust_remote_code: true
+
+  # Gemma 4 é multimodal — congela componentes visuais para CPT/SFT text-only
+  text_only_mode: true
+  freeze_vision_encoder: true
+  freeze_multi_modal_projector: true
+
+tokenizer:
+  use_fast: true
+  padding_side: "right"
+  add_eos_token: true
+  use_apply_chat_template: true
+
+chat_template_fallback:
+  bos_token: "<bos>"
+  user_prefix: "<|turn>user\n"
+  user_suffix: "<turn|>\n"
+  model_prefix: "<|turn>model\n"
+  model_suffix: "<turn|>\n"
+  system_prefix: "<|turn>system\n"
+  system_suffix: "<turn|>\n"
+  think_open: "<|think|>\n"
+  think_close: "<channel|>\n"
+
+thinking:
+  empty_channel_for_non_think: true
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+
+vocab_expansion:
+  enabled: false
+  sizes: [8000, 16000, 32000]
+  preserve_special_tokens: true
+  init_method: "mean"

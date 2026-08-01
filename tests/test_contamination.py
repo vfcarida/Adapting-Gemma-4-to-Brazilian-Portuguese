@@ -6,15 +6,17 @@ Integration tests require datasketch and are skipped if unavailable.
 
 import hashlib
 import re
-import unicodedata
-import pytest
 import sys
+import unicodedata
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 # --- Re-implement pure functions locally to avoid datasketch import ---
+
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
@@ -32,12 +34,13 @@ def ngrams(text: str, n: int = 5) -> set[str]:
     words = text.split()
     if len(words) < n:
         return {" ".join(words)}
-    return {" ".join(words[i: i + n]) for i in range(len(words) - n + 1)}
+    return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
 # Check if datasketch is available for integration tests
 try:
-    from datasketch import MinHash
+    from datasketch import MinHash  # noqa: F401 - availability probe, not used directly
+
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False
@@ -211,8 +214,9 @@ class TestContaminationIntegration:
     @pytest.mark.skipif(not HAS_DATASKETCH, reason="datasketch not installed")
     def test_multiple_benchmarks(self):
         """run_contamination_report should handle multiple benchmarks."""
-        from src.data.contamination_checks import run_contamination_report
         import tempfile
+
+        from src.data.contamination_checks import run_contamination_report
 
         benchmarks = {
             "bench_a": ["text A for benchmark"],

@@ -2,50 +2,80 @@
 
 ## Benchmark Suite
 
+Every `Source` below is a real HuggingFace dataset ID, verified live against
+the Hub — see `configs/eval/benchmarks.yaml` for the exact `hub_id`/`subset`
+per entry and any split/gating notes.
+
 ### Brasil Geral (General Knowledge)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| ENEM 2022 | Multiple choice (5 options) | Accuracy | `maritaca-ai/enem` |
-| ENEM 2023 | Multiple choice (5 options) | Accuracy | `maritaca-ai/enem` |
-| ENEM 2024 | Multiple choice (5 options) | Accuracy | `maritaca-ai/enem` |
-| BLUEX | Multiple choice (university entrance) | Accuracy | `Se7enB/bluex` |
+| ENEM 2022/2023/2024 | Multiple choice (5 options) | Accuracy | `maritaca-ai/enem` |
+| BLUEX | Multiple choice (university entrance) | Accuracy | `eduagarcia-temp/BLUEX_without_images` |
 
 ### Semantica (Semantic Understanding)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| ASSIN2-RTE | Textual entailment | Accuracy | `assin2` |
-| ASSIN2-STS | Semantic similarity (1-5) | Pearson | `assin2` |
-| CoPA-PT | Causal reasoning (2 choices) | Accuracy | `Se7enB/copa_pt` |
-| MRPC-PT | Paraphrase detection | Accuracy | Local JSONL |
-| RTE-PT | Textual entailment | Accuracy | Local JSONL |
+| ASSIN2-RTE | Textual entailment | Accuracy | `nilc-nlp/assin2` |
+| ASSIN2-STS | Semantic similarity (1-5) | Pearson | `nilc-nlp/assin2` |
+| CoPA-PT | Causal reasoning (2 choices) | Accuracy | `PORTULAN/extraglue` (`copa_pt-BR`) |
+| BoolQ-PT | Yes/no QA over a passage | Accuracy | `PORTULAN/extraglue` (`boolq_pt-BR`) |
+| MRPC-PT | Paraphrase detection | Accuracy | `PORTULAN/extraglue` (`mrpc_pt-BR`) |
+| RTE-PT | Textual entailment | Accuracy | `PORTULAN/extraglue` (`rte_pt-BR`) |
 
 ### Classificacao Social (Social Classification)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| HateBR | Hate speech detection | Macro-F1 | `Se7enB/HateBR` |
-| TweetSentBR | Sentiment (pos/neg/neu) | Macro-F1 | `Se7enB/TweetSentBR` |
+| HateBR | Hate speech detection | Macro-F1 | `ruanchaves/hatebr` |
+| TweetSentBR | Sentiment (pos/neg/neu) | Macro-F1 | `eduagarcia/tweetsentbr_fewshot` |
 
 ### Juridico (Legal)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| OAB-Bench | Bar exam questions (4 options) | Accuracy | Local JSONL |
+| OAB-Bench | Bar exam questions (4 options) | Accuracy | `eduagarcia/oab_exams` |
+| LeNER-Br | Legal named-entity recognition | Entity Micro-F1 | `peluz/lener_br` |
+| LegalBench-BR | Court-decision judgment classification | Accuracy | `eduagarcia/portuguese_benchmark` (`brazilian_court_decisions_judgment`) |
 
 ### Cultura (Cultural Knowledge)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| BRoverbs | Proverb completion (4 options) | Accuracy | Local JSONL |
-| Tuguesice-PT | Language/culture trivia | Accuracy | Local JSONL |
+| BRoverbs | Proverb completion (5 options) | Accuracy | `Tropic-AI/BRoverbs` |
+| CAPITU | Brazilian literature comprehension | Accuracy | **Disabled by default** — no public HF dataset exists yet (paper: arXiv:2603.22576); see `src/eval/tasks/capitu.py` for how to plug in a local JSONL if you obtain the data |
+
+### Dominio Publico
+
+| Benchmark | Type | Metric | Source |
+|-----------|------|--------|--------|
+| PublicHearing-BR | Public-hearing summarization | Macro-F1 | `unicamp-dl/PublicHearingBR` |
 
 ### Seguranca (Safety)
 
 | Benchmark | Type | Metric | Source |
 |-----------|------|--------|--------|
-| DoNotAnswer-PT | Harmful question refusal | Refusal Rate | Local JSONL |
+| DoNotAnswer-PT | Harmful question refusal | Refusal Rate | **Disabled by default** — no public HF dataset exists for a Brazilian-Portuguese DoNotAnswer yet |
+
+### Retencao EN (English Retention)
+
+| Benchmark | Type | Metric | Source |
+|-----------|------|--------|--------|
+| MMLU | Multiple choice (4 options) | Accuracy | `cais/mmlu` |
+| HellaSwag | Sentence continuation (4 options) | Accuracy | `Rowan/hellaswag` |
+| ARC-Challenge | Science QA (multiple choice) | Accuracy | `allenai/ai2_arc` |
+
+### Exploratorio
+
+| Benchmark | Type | Metric | Source |
+|-----------|------|--------|--------|
+| XL-Sum-PT | Summarization | ROUGE-L | `csebuetnlp/xlsum` (`portuguese`) |
+
+**Not wired into the config** (implemented as task classes but no verified
+real dataset was found — see comments in the respective task file):
+Math-PT (`math_pt.py`), Tuguesice-PT (`tuguesice_pt.py`, entirely
+fabricated, zero hits anywhere).
 
 ## Running Evaluation
 

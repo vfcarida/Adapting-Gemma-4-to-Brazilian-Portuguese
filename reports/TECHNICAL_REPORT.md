@@ -1,11 +1,16 @@
 # Relatório Técnico v2 — Gemma 4 Portuguese Adaptation
 
+> **Nota**: snapshot histórico. O corpus real é `Itau-Unibanco/Aurora-PT`
+> (não `dominguesm/aurora-pt`, que não existe); a suíte de testes atual tem
+> 253 testes; um caminho de execução em GPU única via Google Colab foi
+> adicionado em `colab/`. Ver `README.md` para o estado atual.
+
 ## Resumo Executivo
 
-Pipeline completo de adaptação do Google Gemma 4 ao português brasileiro usando o corpus Aurora-PT (NorBERTo, ~331B tokens GPT-2). Implementa CPT, residual merge, SFT, DPO opcional, e avaliação em 20+ benchmarks com rigor estatístico.
+Pipeline completo de adaptação do Google Gemma 4 ao português brasileiro usando o corpus Aurora-PT (~331B tokens GPT-2). Implementa CPT, residual merge, SFT, DPO opcional, e avaliação em 20+ benchmarks com rigor estatístico.
 
-**Estado:** Infraestrutura completa. Pronto para execução experimental.
-**Testes:** 125 passando, 9 skipped (deps opcionais). 0 falhas.
+**Estado:** Infraestrutura completa, corrigida e verificada (ver nota acima). Pronto para execução experimental — inclusive em GPU única via Colab.
+**Testes:** 253 passando, 0 falhas (`pytest tests/ -q`).
 **Arquivos:** 99 (Python, YAML, Bash, Markdown).
 
 ---

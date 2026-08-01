@@ -1,7 +1,15 @@
 # Pre-Train Readiness Report
 
-**Data:** 2026-06-01
+**Data:** 2026-06-01 (snapshot histórico — ver nota abaixo)
 **Status:** PRONTO (pendente GPU)
+
+> **Nota de atualização**: desde este snapshot, uma revisão completa de
+> correção corrigiu bugs que impediam a execução real (crashes de
+> configuração, collator que descartava o masking de labels do packing,
+> IDs de modelo/dataset fabricados) e adicionou um caminho de GPU única via
+> Google Colab (`colab/`). "Validado em CPU" aqui referia-se majoritariamente
+> a testes que reimplementavam a lógica localmente em vez de importar o
+> código real — isso também foi corrigido. Ver `README.md` para o estado atual.
 
 ## Resumo
 

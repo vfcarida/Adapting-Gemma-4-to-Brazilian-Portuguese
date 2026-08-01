@@ -15,11 +15,9 @@ Key design decisions:
 
 import hashlib
 import re
-from pathlib import Path
 from typing import Any
 
 from datasets import Dataset, load_dataset
-from tqdm import tqdm
 
 from src.utils.logging_utils import get_logger
 
@@ -134,12 +132,11 @@ class AuroraLoader:
         Returns:
             Dict with "train" and "validation" Dataset objects.
         """
+
         def assign_split(example, idx):
             # Hash first 500 chars for deterministic assignment
             # MD5 is fine here (not security-critical, just uniform distribution)
-            doc_hash = hashlib.md5(
-                example["text"][:500].encode()
-            ).hexdigest()
+            doc_hash = hashlib.md5(example["text"][:500].encode()).hexdigest()
             # Convert first 8 hex digits to float in [0, 1]
             hash_val = int(doc_hash[:8], 16) / 0xFFFFFFFF
             example["_split"] = "val" if hash_val < self.val_ratio else "train"
@@ -181,6 +178,7 @@ def tokenize_for_cpt(
     pack: bool = True,
     curriculum_sort: bool = False,
     mask_cross_doc_labels: bool = False,
+    use_eos_separator: bool = True,
 ) -> Dataset:
     """Tokenize and optionally pack sequences for causal LM training.
 
@@ -200,23 +198,26 @@ def tokenize_for_cpt(
             first during training.
         mask_cross_doc_labels: If True, set labels to -100 at document
             boundaries in packed sequences. Prevents cross-document loss.
+        use_eos_separator: If True (default), insert the tokenizer's EOS
+            token between packed documents. If False, documents are
+            concatenated with no separator (legacy/ablation behavior — see
+            configs/train/ablation_packing.yaml's F1 variant).
 
     Returns:
         Dataset with "input_ids" and "labels" columns, ready for training.
     """
+
     def tokenize_fn(examples):
         return tokenizer(
             examples["text"],
-            truncation=False,      # Don't truncate - packing handles length
-            padding=False,         # No padding - packing fills sequences
+            truncation=False,  # Don't truncate - packing handles length
+            padding=False,  # No padding - packing fills sequences
             return_attention_mask=False,  # Not needed for packed CPT
         )
 
     if curriculum_sort:
         logger.info("Curriculum sort: ordering documents by length (shorter first)...")
-        dataset = dataset.map(
-            lambda x: {"_len": len(x["text"])}, desc="Computing lengths"
-        )
+        dataset = dataset.map(lambda x: {"_len": len(x["text"])}, desc="Computing lengths")
         dataset = dataset.sort("_len")
         dataset = dataset.remove_columns(["_len"])
 
@@ -229,9 +230,10 @@ def tokenize_for_cpt(
     )
 
     if pack:
-        eos_token_id = tokenizer.eos_token_id
+        eos_token_id = tokenizer.eos_token_id if use_eos_separator else None
         tokenized = pack_sequences(
-            tokenized, max_seq_length,
+            tokenized,
+            max_seq_length,
             eos_token_id=eos_token_id,
             mask_cross_doc_labels=mask_cross_doc_labels,
         )
@@ -314,8 +316,7 @@ def pack_sequences(
                 buffer = buffer[max_seq_length:]
                 # Adjust boundary positions for consumed tokens
                 boundary_positions = [
-                    p - max_seq_length for p in boundary_positions
-                    if p >= max_seq_length
+                    p - max_seq_length for p in boundary_positions if p >= max_seq_length
                 ]
 
         # Remaining tokens in buffer are discarded per batch.

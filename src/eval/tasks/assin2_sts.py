@@ -1,6 +1,7 @@
 """ASSIN2-STS task."""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 
@@ -8,7 +9,9 @@ class Assin2STSTask(BaseTask):
     """ASSIN2 Semantic Textual Similarity."""
 
     def load_data(self, config: dict[str, Any]) -> list[dict]:
-        hub_id = config.get("hub_id", "assin2")
+        # "assin2" now resolves via a Hub redirect; use the canonical
+        # nilc-nlp/assin2 id directly to avoid the redirect/script-loading issues.
+        hub_id = config.get("hub_id", "nilc-nlp/assin2")
         data = self._load_from_hub(hub_id, split="test")
 
         examples = []

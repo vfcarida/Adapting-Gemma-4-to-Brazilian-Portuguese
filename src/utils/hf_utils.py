@@ -13,13 +13,12 @@ IMPORTANTE: Gemma 4 é multimodal. Para CPT/SFT em texto puro, devemos
 congelar os encoders visuais e o projetor multimodal.
 """
 
-from pathlib import Path
+import os
 from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from src.utils.config_utils import load_config
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -44,6 +43,19 @@ def load_tokenizer(model_id: str, **kwargs) -> AutoTokenizer:
         **kwargs,
     )
     if tokenizer.pad_token is None:
+        # Gemma tokenizers ship a dedicated <pad> token distinct from <eos>,
+        # so this fallback should not trigger for Gemma models. It exists for
+        # other base models that lack a pad token. Aliasing pad to eos here
+        # would make DataCollatorForLanguageModeling mask every EOS position
+        # (labels[labels == pad_token_id] = -100), which is why the CPT
+        # trainer never relies on this collator to mask padding (see
+        # src/train/cpt_trainer.py's PackedSequenceCollator).
+        logger.warning(
+            f"{model_id}: tokenizer has no pad_token; aliasing to eos_token. "
+            "This is safe for inference/eval padding, but never pass "
+            "DataCollatorForLanguageModeling(mlm=False) over pre-packed CPT "
+            "sequences from this tokenizer without checking label masking."
+        )
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
@@ -70,7 +82,7 @@ def load_model_for_training(
     """
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
-        "torch_dtype": torch.bfloat16,
+        "dtype": torch.bfloat16,
     }
 
     if model_config:
@@ -80,6 +92,7 @@ def load_model_for_training(
             if attn_impl == "flash_attention_2":
                 try:
                     import flash_attn  # noqa: F401
+
                     kwargs["attn_implementation"] = attn_impl
                 except ImportError:
                     logger.warning(
@@ -100,6 +113,20 @@ def load_model_for_training(
             bnb_4bit_quant_type=quant_cfg.get("bnb_4bit_quant_type", "nf4"),
             bnb_4bit_use_double_quant=quant_cfg.get("bnb_4bit_use_double_quant", True),
         )
+        # bitsandbytes-quantized models must be placed on a device at load
+        # time (they cannot be `.to(device)`-ed afterwards). Without
+        # DeepSpeed, map the whole model onto the single visible GPU (or the
+        # process-local GPU under `accelerate launch` with multiple
+        # processes) — the standard pattern for QLoRA training on Colab/
+        # single-GPU boxes. Under DeepSpeed, `device_map` must stay unset so
+        # ZeRO can shard the model itself.
+        if torch.cuda.is_available() and not os.environ.get("ACCELERATE_USE_DEEPSPEED"):
+            try:
+                from accelerate import PartialState
+
+                kwargs["device_map"] = {"": PartialState().local_process_index}
+            except ImportError:
+                kwargs["device_map"] = {"": 0}
 
     logger.info(f"Carregando modelo: {model_id} (quantize={quantize})")
     model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
@@ -129,9 +156,14 @@ def _freeze_multimodal_modules(model: torch.nn.Module) -> None:
     frozen_count = 0
     # Padrões de nomes de módulos multimodais em modelos Gemma 4
     multimodal_patterns = [
-        "vision_tower", "vision_encoder", "visual",
-        "multi_modal_projector", "mm_projector",
-        "image_encoder", "img_", "pixel",
+        "vision_tower",
+        "vision_encoder",
+        "visual",
+        "multi_modal_projector",
+        "mm_projector",
+        "image_encoder",
+        "img_",
+        "pixel",
     ]
 
     for name, param in model.named_parameters():
@@ -162,7 +194,7 @@ def load_model_for_inference(
     """
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
-        "torch_dtype": torch.bfloat16,
+        "dtype": torch.bfloat16,
         "device_map": device,
     }
 
@@ -281,6 +313,7 @@ def estimate_vram_gb(
     # Activations (highly dependent on seq_length and batch_size)
     # Use known model architecture parameters by size bracket
     import math
+
     if model_params_b <= 1.5:
         hidden_dim, num_layers = 2048, 22
     elif model_params_b <= 3:
@@ -299,9 +332,7 @@ def estimate_vram_gb(
     # Per-layer activation memory: batch * seq * hidden * dtype * factor
     # Factor accounts for attention QKV, intermediate states (~4x hidden)
     activation_factor = 4
-    activations_per_layer = (
-        batch_size * seq_length * hidden_dim * dtype_bytes * activation_factor
-    )
+    activations_per_layer = batch_size * seq_length * hidden_dim * dtype_bytes * activation_factor
     if gradient_checkpointing:
         # Only store activations at checkpoint boundaries (~sqrt(layers))
         active_layers = int(math.sqrt(num_layers)) + 1
@@ -339,4 +370,4 @@ def _recommend_gpu(total_vram_gb: float) -> str:
     elif total_vram_gb <= 80:
         return "A100-80GB or H100-80GB"
     else:
-        return f"Multi-GPU required (~{int(total_vram_gb/80)+1}x A100-80GB)"
+        return f"Multi-GPU required (~{int(total_vram_gb / 80) + 1}x A100-80GB)"

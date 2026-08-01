@@ -25,9 +25,7 @@ Usage:
     builder.build_plots()
 """
 
-import json
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -36,8 +34,12 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Benchmark groups for structured reporting
-# Maps group names to their constituent benchmarks
+# NOTE: this constant is NOT used for grouping anywhere below — grouping is
+# entirely data-driven from each benchmark result's own `group` field
+# (`bench_result.get("group", ...)`, set from `configs/eval/benchmarks.yaml`
+# at eval time). Kept only as human-readable reference documentation of the
+# intended group membership; update it when benchmarks.yaml's groups change,
+# but it has no runtime effect.
 BENCHMARK_GROUPS = {
     "brasil_geral": ["enem_2022", "enem_2023", "enem_2024", "bluex"],
     "semantica": ["assin2_rte", "assin2_sts", "copa_pt", "mrpc_pt", "rte_pt"],
@@ -110,14 +112,16 @@ class ReportBuilder:
                     # Use the benchmark's declared primary metric
                     primary_metric = bench_result.get("metric_name", "accuracy")
                     score = metrics.get(primary_metric, metrics.get("accuracy", 0))
-                    rows.append({
-                        "model": model_name,
-                        "think_mode": mode_key,
-                        "benchmark": bench_name,
-                        "group": bench_result.get("group", ""),
-                        "metric": primary_metric,
-                        "score": score,
-                    })
+                    rows.append(
+                        {
+                            "model": model_name,
+                            "think_mode": mode_key,
+                            "benchmark": bench_name,
+                            "group": bench_result.get("group", ""),
+                            "metric": primary_metric,
+                            "score": score,
+                        }
+                    )
 
         df = pd.DataFrame(rows)
 
@@ -173,13 +177,15 @@ class ReportBuilder:
 
                 # Compute macro average per group
                 for group, scores in group_scores.items():
-                    rows.append({
-                        "model": model_name,
-                        "think_mode": mode_key,
-                        "group": group,
-                        "macro_avg": float(np.mean(scores)),
-                        "n_benchmarks": len(scores),
-                    })
+                    rows.append(
+                        {
+                            "model": model_name,
+                            "think_mode": mode_key,
+                            "group": group,
+                            "macro_avg": float(np.mean(scores)),
+                            "n_benchmarks": len(scores),
+                        }
+                    )
 
         df = pd.DataFrame(rows)
         df.to_csv(self.output_dir / "group_averages.csv", index=False)
@@ -193,7 +199,11 @@ class ReportBuilder:
 
         Saves: best_per_benchmark.csv
         """
-        df = pd.read_csv(self.output_dir / "results_full.csv") if (self.output_dir / "results_full.csv").exists() else pd.DataFrame()
+        df = (
+            pd.read_csv(self.output_dir / "results_full.csv")
+            if (self.output_dir / "results_full.csv").exists()
+            else pd.DataFrame()
+        )
         if df.empty:
             return
 
@@ -226,6 +236,16 @@ class ReportBuilder:
 
         summary = "# Evaluation Summary\n\n"
         summary += "## Best Model by Average Score\n\n"
+        summary += (
+            "> **Caveat**: this average mixes metrics on different scales "
+            "(accuracy/F1 in [0,1], Pearson r in [-1,1], ROUGE-L in [0,1], "
+            'refusal_rate in [0,1] but with an opposite "higher is better" '
+            "sense for a safety metric) — treat it as a rough ranking "
+            "signal, not a calibrated score. Prefer the per-group averages "
+            "in `group_averages.csv` (still mixes metric types within a "
+            "group in a few cases, but far less than pooling everything) or "
+            "compare models benchmark-by-benchmark in `results_full.csv`.\n\n"
+        )
         for model, score in model_avg.items():
             summary += f"- **{model}**: {score:.4f}\n"
 
@@ -273,7 +293,11 @@ class ReportBuilder:
 
         # Plot 1: Bar chart of group averages by model
         fig, ax = plt.subplots(figsize=(12, 6))
-        group_df = pd.read_csv(self.output_dir / "group_averages.csv") if (self.output_dir / "group_averages.csv").exists() else pd.DataFrame()
+        group_df = (
+            pd.read_csv(self.output_dir / "group_averages.csv")
+            if (self.output_dir / "group_averages.csv").exists()
+            else pd.DataFrame()
+        )
         if not group_df.empty:
             pivot = group_df.pivot_table(index="group", columns="model", values="macro_avg")
             pivot.plot(kind="bar", ax=ax)
@@ -310,7 +334,11 @@ class ReportBuilder:
         """
         import matplotlib.pyplot as plt
 
-        group_df = pd.read_csv(self.output_dir / "group_averages.csv") if (self.output_dir / "group_averages.csv").exists() else pd.DataFrame()
+        group_df = (
+            pd.read_csv(self.output_dir / "group_averages.csv")
+            if (self.output_dir / "group_averages.csv").exists()
+            else pd.DataFrame()
+        )
         if group_df.empty:
             return
 

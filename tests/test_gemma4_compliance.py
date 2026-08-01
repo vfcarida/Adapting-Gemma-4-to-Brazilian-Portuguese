@@ -9,30 +9,26 @@ Cobre:
 - Diferenciação text-only/IT/thinking/multimodal
 """
 
-import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.prompt_builders import (
-    Gemma4PromptBuilder,
-    BaselinePromptBuilder,
-    GEMMA4_START_OF_TURN,
     GEMMA4_END_OF_TURN,
+    GEMMA4_START_OF_TURN,
     GEMMA4_THINK_OPEN,
-    GEMMA4_THINK_CLOSE,
-    GEMMA4_ROLE_MODEL,
-    GEMMA4_ROLE_USER,
+    GEMMA4_THOUGHT_CHANNEL_CLOSE,
+    GEMMA4_THOUGHT_CHANNEL_OPEN,
+    BaselinePromptBuilder,
+    Gemma4PromptBuilder,
 )
 from src.eval.prompt_templates import (
     PromptBuilder,
-    strip_thought,
-    extract_thought,
     _wrap_gemma4_legacy,
-    get_prompt_template,
+    extract_thought,
+    strip_thought,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -41,15 +37,14 @@ from src.eval.prompt_templates import (
 
 class MockTokenizerNoChat:
     """Tokenizer sem chat template."""
+
     pass
 
 
 class MockTokenizerWithChat:
     """Tokenizer com apply_chat_template funcional."""
 
-    def apply_chat_template(
-        self, messages, tokenize=False, add_generation_prompt=False, **kwargs
-    ):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, **kwargs):
         parts = []
         for msg in messages:
             role = msg["role"]
@@ -134,8 +129,8 @@ class TestWithThinking:
         messages = [{"role": "user", "content": "Pergunta"}]
         result = builder.format_for_inference(messages, think_mode="budget")
 
-        # Should have empty think channel
-        assert f"{GEMMA4_THINK_OPEN}\n{GEMMA4_THINK_CLOSE}\n" in result
+        # Should have an empty thought channel
+        assert f"{GEMMA4_THOUGHT_CHANNEL_OPEN}\n{GEMMA4_THOUGHT_CHANNEL_CLOSE}\n" in result
 
     def test_think_on_training(self):
         builder = Gemma4PromptBuilder(MockTokenizerNoChat())
@@ -154,7 +149,7 @@ class TestWithThinking:
         result = builder.format_for_inference(messages, think_mode="off")
 
         assert GEMMA4_THINK_OPEN not in result
-        assert GEMMA4_THINK_CLOSE not in result
+        assert GEMMA4_THOUGHT_CHANNEL_OPEN not in result
 
 
 # =============================================================================
@@ -297,17 +292,26 @@ class TestModelModes:
         assert "<start_of_turn>" not in result
 
     def test_eval_prompt_builder_chat_fallback(self):
-        """PromptBuilder (eval) em modo chat sem tokenizer."""
+        """PromptBuilder (eval) em modo chat sem tokenizer.
+
+        Marcadores reais do Gemma 4 (verificado ao vivo contra
+        google/gemma-4-E2B-it): `<|turn>role\n` / `<turn|>\n`, não
+        `<start_of_turn>`/`<end_of_turn>` (formato do Gemma 2/3).
+        """
         pb = PromptBuilder(tokenizer=None, is_chat_model=True)
         result = pb.format_prompt(None, "Teste", think_mode="off")
-        assert "<start_of_turn>user" in result
-        assert "<start_of_turn>model" in result
+        assert "<|turn>user" in result
+        assert "<|turn>model" in result
 
     def test_legacy_wrap_consistency(self):
-        """_wrap_gemma4_legacy deve ser consistente com Gemma4PromptBuilder."""
+        """_wrap_gemma4_legacy deve ser consistente com Gemma4PromptBuilder.
+
+        Nenhum dos dois deve prefixar "<bos>" literal — o tokenizer adiciona
+        o BOS via add_special_tokens=True, evitando duplicação.
+        """
         legacy = _wrap_gemma4_legacy("Teste", think_mode="off")
-        assert "<bos>" in legacy
-        assert "<start_of_turn>user\nTeste" in legacy
+        assert "<bos>" not in legacy
+        assert "<|turn>user\nTeste" in legacy
 
 
 # =============================================================================

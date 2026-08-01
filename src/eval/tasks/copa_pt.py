@@ -1,20 +1,28 @@
 """CoPA-PT task."""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 
 class CopaPTTask(BaseTask):
-    """Choice of Plausible Alternatives in Portuguese."""
+    """Choice of Plausible Alternatives in Portuguese (PORTULAN extraglue)."""
 
     def load_data(self, config: dict[str, Any]) -> list[dict]:
-        hub_id = config.get("hub_id", "Se7enB/copa_pt")
+        # Se7enB/copa_pt was fabricated. Replaced with PORTULAN/extraglue,
+        # config "copa_pt-BR" (train 400 / validation 100 / test 500).
+        hub_id = config.get("hub_id", "PORTULAN/extraglue")
+        subset = config.get("subset", "copa_pt-BR")
         local_path = config.get("local_path")
 
         if local_path:
             data = self._load_from_local(local_path)
         else:
-            data = self._load_from_hub(hub_id)
+            # NOTE: the "test" split of PORTULAN/extraglue has its label
+            # masked to -1 for every row (inherited GLUE/SuperGLUE convention
+            # of hiding test labels). "validation" is the only split with
+            # real, usable gold labels, so it is used here for evaluation.
+            data = self._load_from_hub(hub_id, subset=subset, split="validation")
 
         examples = []
         for item in data:
@@ -31,18 +39,20 @@ class CopaPTTask(BaseTask):
             example = {
                 "question": question,
                 "options": options,
-                "answer": str(int(label) + 1),  # 0-indexed to 1-indexed
+                # 0/1 (int) -> "A"/"B", matching the A)/B) options rendered by
+                # the default MC formatter (see prompt_templates._default_formatter)
+                # and the letter-based instruction in TASK_INSTRUCTIONS["copa_pt"].
+                "answer": chr(65 + int(label)),
             }
             examples.append(example)
         return examples
 
     def get_gold_label(self, example: dict) -> str:
-        return str(example.get("answer", ""))
+        return str(example.get("answer", "")).strip().upper()
 
     def parse_prediction(self, raw_prediction: str) -> str:
-        text = raw_prediction.strip()
-        if "1" in text[:3]:
-            return "1"
-        if "2" in text[:3]:
-            return "2"
-        return self._extract_number(text) or "1"
+        # Previously scanned for "1"/"2" in the raw text, which mismatched
+        # the rendered "A) / B)" options and TASK_INSTRUCTIONS wording,
+        # pinning accuracy near chance regardless of model quality. Use the
+        # shared, well-tested letter extractor instead (see base_task.py).
+        return self._extract_letter(raw_prediction)

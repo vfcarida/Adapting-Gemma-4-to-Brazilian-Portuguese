@@ -86,7 +86,7 @@ choice = argmax(logprobs)
 **Vantagens**: Determinístico, não depende de parsing.
 **Desvantagens**: Requer acesso a logprobs, não simula uso real.
 
-**Implementação**: Disponível em `BenchmarkRunner` quando `scoring_mode: "logprob"` na config.
+**Implementação**: Disponível em `BenchmarkRunner` quando `evaluation.use_logprob: true` na config (a chave é `use_logprob`, não `scoring_mode`), e só se aplica quando `use_vllm: false`, `think_mode == "off"` e `metric == "accuracy"`. A pontuação faz teacher-forcing real: cada opção é anexada ao prompt e o modelo é avaliado token a token sobre ela (não apenas o próximo token após o prompt) — ver `BenchmarkRunner._inference_logprob`.
 
 ## Normalização PT-BR
 
@@ -103,7 +103,7 @@ Antes de comparar predições com gold labels:
 | Métrica | Tarefas | Implementação |
 |---------|---------|---------------|
 | Accuracy | Múltipla escolha | `metrics.py:accuracy` |
-| F1 Macro | Classificação | `metrics.py:f1_macro` |
+| F1 Macro | Classificação | `metrics.py:macro_f1` |
 | Pearson | STS (ASSIN2) | `metrics.py:pearson` |
 | Entity Micro-F1 | NER (LeNER-Br) | `metrics.py:entity_micro_f1` |
 | ROUGE-L | Sumarização | `metrics.py:rouge_l` |
@@ -150,8 +150,9 @@ corrected_pvalues = multiple_comparison_correction(
 
 ## Cache e Reprodutibilidade
 
-- Resultados cacheados em `outputs/eval_cache/` por hash de (model + benchmark + seed + think_mode)
-- Cache invalidado se config de geração mudar
+- Resultados cacheados em `outputs/eval_cache/` por hash de (model + benchmark + think_mode + seed + num_shots + max_new_tokens + temperature + batch_size + use_logprob + use_vllm + hub_id + subset + max_samples + metric) — ver `BenchmarkRunner._cache_key`
+- Cache é de fato invalidado se qualquer uma dessas configs mudar
+- Per-item results (prompt hash, output bruto, predição parseada, gold, acerto) são persistidos em `outputs/eval_cache/<key>_items.jsonl`, permitindo análise pareada post-hoc
 - Para forçar re-avaliação: deletar cache ou mudar seed
 
 ## Limites Conhecidos

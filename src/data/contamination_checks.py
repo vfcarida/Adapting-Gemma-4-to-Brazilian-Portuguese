@@ -7,11 +7,11 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from tqdm import tqdm
 
 try:
     from datasketch import MinHash, MinHashLSH
+
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False
@@ -131,11 +131,13 @@ class ContaminationChecker:
                 # Compute actual Jaccard
                 jaccard = mh.jaccard(self.minhashes[bench_idx])
                 if jaccard >= threshold:
-                    matches.append({
-                        "train_idx": i,
-                        "bench_idx": bench_idx,
-                        "jaccard": float(jaccard),
-                    })
+                    matches.append(
+                        {
+                            "train_idx": i,
+                            "bench_idx": bench_idx,
+                            "jaccard": float(jaccard),
+                        }
+                    )
                     break  # One match is enough
 
         return {
@@ -216,8 +218,7 @@ def run_contamination_report(
     summary = {}
     for name, result in full_report["benchmarks"].items():
         summary[name] = {
-            method: check["contamination_rate"]
-            for method, check in result["checks"].items()
+            method: check["contamination_rate"] for method, check in result["checks"].items()
         }
     full_report["summary"] = summary
 

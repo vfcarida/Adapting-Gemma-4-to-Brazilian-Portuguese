@@ -1,6 +1,12 @@
-"""RTE-PT task."""
+"""RTE-PT task.
+
+Real dataset: PORTULAN/extraglue, config "rte_pt-BR"
+(train 2490 / validation 277 / test 3000). Previously dead/orphaned (not
+referenced in configs/eval/benchmarks.yaml and had no default hub_id).
+"""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 
@@ -9,12 +15,16 @@ class RTEPTTask(BaseTask):
 
     def load_data(self, config: dict[str, Any]) -> list[dict]:
         local_path = config.get("local_path")
-        hub_id = config.get("hub_id")
+        hub_id = config.get("hub_id", "PORTULAN/extraglue")
+        subset = config.get("subset", "rte_pt-BR")
 
         if local_path:
             data = self._load_from_local(local_path)
         elif hub_id:
-            data = self._load_from_hub(hub_id)
+            # NOTE: the "test" split has its label masked to -1 for every row
+            # (GLUE test-label-hiding convention, inherited by extraglue).
+            # "validation" is the only split with real, usable gold labels.
+            data = self._load_from_hub(hub_id, subset=subset, split="validation")
         else:
             return []
 

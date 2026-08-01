@@ -1,19 +1,20 @@
 """Tests for training callbacks (requires torch)."""
 
-import pytest
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 pytest.importorskip("torch")
 
 from src.train.callbacks import (
-    ThroughputCallback,
-    LocalMetricsCallback,
     EarlyStoppingOnPlateau,
     GPUMemoryCallback,
+    LocalMetricsCallback,
+    ThroughputCallback,
 )
 
 
@@ -40,8 +41,9 @@ class MockArgs:
 class MockState:
     """Mock TrainerState."""
 
-    def __init__(self, global_step=0):
+    def __init__(self, global_step=0, is_world_process_zero=True):
         self.global_step = global_step
+        self.is_world_process_zero = is_world_process_zero
 
 
 class MockControl:
@@ -84,7 +86,9 @@ class TestThroughputCallback:
 
     def test_accumulates_total_tokens(self):
         logger = MockMetricsLogger()
-        cb = ThroughputCallback(logger)
+        # seq_length is now an explicit constructor arg (TrainingArguments has
+        # no max_seq_length attribute in real usage — only SFTConfig does).
+        cb = ThroughputCallback(logger, seq_length=1024)
         args = MockArgs(batch_size=2, grad_accum=1, logging_steps=1, max_seq_length=1024)
 
         for step in range(1, 4):

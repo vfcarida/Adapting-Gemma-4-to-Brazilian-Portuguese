@@ -27,10 +27,9 @@ Usage:
 
 import os
 import time
-from typing import Any
 
 import torch
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from transformers import TrainerCallback
 
 from src.utils.logging_utils import MetricsLogger, get_logger
 
@@ -51,10 +50,15 @@ class ThroughputCallback(TrainerCallback):
 
     Args:
         metrics_logger: MetricsLogger instance for persisting metrics.
+        seq_length: Sequence length used for the token-throughput estimate.
+            `TrainingArguments` has no `max_seq_length` attribute (that's an
+            `SFTConfig`-only field), so this must be passed in explicitly by
+            the caller rather than read off `args`.
     """
 
-    def __init__(self, metrics_logger: MetricsLogger):
+    def __init__(self, metrics_logger: MetricsLogger, seq_length: int = 8192):
         self.metrics_logger = metrics_logger
+        self.seq_length = seq_length
         self.step_start_time = None
         self.total_tokens = 0
 
@@ -68,15 +72,18 @@ class ThroughputCallback(TrainerCallback):
             return
 
         elapsed = time.time() - self.step_start_time
-        # Effective batch size includes gradient accumulation
-        batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
-        # Estimate tokens: assumes packed sequences fill max_seq_length
-        seq_length = getattr(args, "max_seq_length", 8192)
-        tokens_per_step = batch_size * seq_length
+        # Effective batch size per optimizer step, across all data-parallel
+        # ranks (world_size), including gradient accumulation.
+        world_size = max(getattr(args, "world_size", 1), 1)
+        batch_size = (
+            args.per_device_train_batch_size * args.gradient_accumulation_steps * world_size
+        )
+        tokens_per_step = batch_size * self.seq_length
         self.total_tokens += tokens_per_step
 
-        # Only log at intervals to reduce I/O overhead
-        if state.global_step % args.logging_steps == 0:
+        # Only log at intervals to reduce I/O overhead, and only from the
+        # main process (every rank would otherwise append to the same file).
+        if state.is_world_process_zero and state.global_step % args.logging_steps == 0:
             throughput = tokens_per_step / max(elapsed, 1e-6)
             self.metrics_logger.log(
                 {
@@ -106,7 +113,7 @@ class LocalMetricsCallback(TrainerCallback):
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         """Persist numeric training metrics from each log event."""
-        if logs:
+        if logs and state.is_world_process_zero:
             # Filter to numeric values only (skip strings like "epoch")
             self.metrics_logger.log(
                 {k: v for k, v in logs.items() if isinstance(v, (int, float))},
@@ -115,9 +122,12 @@ class LocalMetricsCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Persist evaluation metrics with an 'eval' event marker."""
-        if metrics:
+        if metrics and state.is_world_process_zero:
             self.metrics_logger.log(
-                {"event": "eval", **{k: v for k, v in metrics.items() if isinstance(v, (int, float))}},
+                {
+                    "event": "eval",
+                    **{k: v for k, v in metrics.items() if isinstance(v, (int, float))},
+                },
                 step=state.global_step,
             )
 
@@ -193,6 +203,8 @@ class GPUMemoryCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, **kwargs):
         """Log GPU memory at reduced frequency (every 10x logging_steps)."""
+        if not state.is_world_process_zero:
+            return
         if state.global_step % (args.logging_steps * 10) == 0 and torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1e9  # Convert bytes to GB
             reserved = torch.cuda.memory_reserved() / 1e9
@@ -255,21 +267,33 @@ class ForgettingMonitorCallback(TrainerCallback):
             return
 
         # Pre-tokenize English eval set
-        texts = self.en_eval_texts[:self.max_eval_samples]
+        texts = self.en_eval_texts[: self.max_eval_samples]
         self._eval_encodings = self._tokenizer(
             texts, truncation=True, max_length=512, padding=True, return_tensors="pt"
         )
 
-        # Compute initial perplexity (baseline before any training)
+        # Compute initial perplexity (baseline before any training). This
+        # forward pass runs on EVERY rank (not just world_process_zero) —
+        # under DeepSpeed ZeRO-3, `model()` triggers a collective all-gather
+        # of sharded parameters per layer, so all ranks must call forward
+        # together or the ones not participating will hang waiting for a
+        # collective that never arrives from rank 0 alone. Only the logging
+        # below is restricted to the main process.
         if model is not None:
             self.initial_perplexity = self._compute_perplexity(model)
-            logger.info(f"ForgettingMonitor: Initial EN perplexity = {self.initial_perplexity:.2f}")
-            if self.metrics_logger:
-                self.metrics_logger.log({
-                    "en_perplexity": self.initial_perplexity,
-                    "en_forgetting_delta": 0.0,
-                    "event": "forgetting_baseline",
-                }, step=0)
+            if state.is_world_process_zero:
+                logger.info(
+                    f"ForgettingMonitor: Initial EN perplexity = {self.initial_perplexity:.2f}"
+                )
+                if self.metrics_logger:
+                    self.metrics_logger.log(
+                        {
+                            "en_perplexity": self.initial_perplexity,
+                            "en_forgetting_delta": 0.0,
+                            "event": "forgetting_baseline",
+                        },
+                        step=0,
+                    )
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
         """Evaluate English perplexity at regular intervals."""
@@ -281,7 +305,11 @@ class ForgettingMonitorCallback(TrainerCallback):
         if state.global_step == 0:
             return
 
+        # Computed on every rank (see on_train_begin comment); logged once.
         ppl = self._compute_perplexity(model)
+        if not state.is_world_process_zero:
+            return
+
         delta = ppl - self.initial_perplexity if self.initial_perplexity else 0.0
 
         logger.info(
@@ -290,30 +318,41 @@ class ForgettingMonitorCallback(TrainerCallback):
         )
 
         if self.metrics_logger:
-            self.metrics_logger.log({
-                "en_perplexity": ppl,
-                "en_forgetting_delta": delta,
-                "event": "forgetting_check",
-            }, step=state.global_step)
+            self.metrics_logger.log(
+                {
+                    "en_perplexity": ppl,
+                    "en_forgetting_delta": delta,
+                    "event": "forgetting_check",
+                },
+                step=state.global_step,
+            )
 
         # Warn if forgetting is significant (>20% increase)
         if self.initial_perplexity and ppl > self.initial_perplexity * 1.2:
             logger.warning(
                 f"FORGETTING ALERT: EN perplexity increased by "
-                f"{(ppl/self.initial_perplexity - 1)*100:.1f}% — consider increasing replay ratio"
+                f"{(ppl / self.initial_perplexity - 1) * 100:.1f}% — consider increasing replay ratio"
             )
 
     def _compute_perplexity(self, model) -> float:
         """Compute perplexity on the English eval set."""
         import math
+
         model.eval()
         device = next(model.parameters()).device
 
         input_ids = self._eval_encodings["input_ids"].to(device)
         attention_mask = self._eval_encodings["attention_mask"].to(device)
 
+        # Mask out padding positions so they don't contribute to the loss —
+        # `padding=True` in on_train_begin means shorter samples in this
+        # fixed batch are padded, and without this mask the model would be
+        # scored (in part) on predicting pad tokens.
+        labels = input_ids.clone()
+        labels[attention_mask == 0] = -100
+
         with torch.no_grad():
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = outputs.loss.item()
 
         model.train()
@@ -323,10 +362,10 @@ class ForgettingMonitorCallback(TrainerCallback):
         """Load a small English validation set from FineWeb-Edu."""
         try:
             from datasets import load_dataset
+
             logger.info("ForgettingMonitor: Loading English eval data from FineWeb-Edu...")
             ds = load_dataset(
-                "HuggingFaceFW/fineweb-edu", "sample-10BT",
-                split="train", streaming=True
+                "HuggingFaceFW/fineweb-edu", "sample-10BT", split="train", streaming=True
             )
             samples = []
             for i, ex in enumerate(ds):
@@ -375,8 +414,11 @@ class WandBCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Initialize W&B run at training start."""
+        if not state.is_world_process_zero:
+            return
         try:
             import wandb
+
             self._wandb = wandb
         except ImportError:
             logger.warning("wandb not installed — WandBCallback disabled. pip install wandb")

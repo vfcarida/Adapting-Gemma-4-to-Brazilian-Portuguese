@@ -92,11 +92,16 @@ class TokenizerAudit:
             if n_words > 0:
                 tokens_per_word.append(n_tokens / n_words)
 
-            # Measure individual token lengths (how many chars each token represents)
-            # Sample first 1000 tokens to avoid O(n^2) on very long texts
-            for tok_id in tokens[:1000]:
-                decoded = self.tokenizer.decode([tok_id])
-                token_lengths.append(len(decoded))
+            # Measure individual token lengths (how many chars each token
+            # represents). Sample first 1000 tokens to avoid O(n^2) on very
+            # long texts, and use one batched convert_ids_to_tokens() call
+            # instead of a decode() call per token (this was ~5M individual
+            # decode() calls for a 5000-text/1000-token audit before this fix
+            # — convert_ids_to_tokens is a single fast call per text).
+            # SentencePiece word-boundary markers ("▁") and BPE ("Ġ") are
+            # stripped since they aren't part of the rendered text.
+            pieces = self.tokenizer.convert_ids_to_tokens(tokens[:1000])
+            token_lengths.extend(len(p.replace("▁", "").replace("Ġ", "")) for p in pieces)
 
         return {
             "tokenizer": self.name,
@@ -109,9 +114,7 @@ class TokenizerAudit:
             "num_samples": len(texts),
         }
 
-    def compare_with(
-        self, other_tokenizer, other_name: str, texts: list[str]
-    ) -> dict[str, Any]:
+    def compare_with(self, other_tokenizer, other_name: str, texts: list[str]) -> dict[str, Any]:
         """Compare this tokenizer against another on the same texts.
 
         Useful for measuring how much less efficient Gemma 4's tokenizer is

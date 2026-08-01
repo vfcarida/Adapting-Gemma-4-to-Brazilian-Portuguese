@@ -8,20 +8,22 @@ PII, toxicidade e score de qualidade geral.
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # Tentativa de importar dependências opcionais
 try:
-    import pyarrow.parquet as pq
     import pyarrow as pa
+    import pyarrow.parquet as pq
+
     HAS_PARQUET = True
 except ImportError:
     HAS_PARQUET = False
 
 try:
-    from datasets import Dataset
+    from datasets import Dataset  # noqa: F401 - availability probe, not used directly
+
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
@@ -29,49 +31,227 @@ except ImportError:
 
 # Stopwords comuns em português para detecção de idioma
 _PT_STOPWORDS: Set[str] = {
-    "de", "a", "o", "que", "e", "do", "da", "em", "um", "para",
-    "é", "com", "não", "uma", "os", "no", "se", "na", "por", "mais",
-    "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem",
-    "à", "seu", "sua", "ou", "ser", "quando", "muito", "há", "nos",
-    "já", "está", "eu", "também", "só", "pelo", "pela", "até",
-    "isso", "ela", "entre", "era", "depois", "sem", "mesmo", "aos",
-    "ter", "seus", "quem", "nas", "me", "esse", "eles", "estão",
-    "você", "tinha", "foram", "essa", "num", "nem", "suas", "meu",
-    "às", "minha", "têm", "numa", "pelos", "elas", "havia", "seja",
-    "qual", "será", "nós", "tenho", "lhe", "deles", "essas", "esses",
-    "pelas", "este", "fosse", "dele", "tu", "te", "vocês", "vos",
-    "lhes", "meus", "minhas", "teu", "tua", "teus", "tuas", "nosso",
-    "nossa", "nossos", "nossas", "dela", "delas", "esta", "estes",
-    "estas", "aquele", "aquela", "aqueles", "aquelas", "isto", "aquilo",
+    "de",
+    "a",
+    "o",
+    "que",
+    "e",
+    "do",
+    "da",
+    "em",
+    "um",
+    "para",
+    "é",
+    "com",
+    "não",
+    "uma",
+    "os",
+    "no",
+    "se",
+    "na",
+    "por",
+    "mais",
+    "as",
+    "dos",
+    "como",
+    "mas",
+    "foi",
+    "ao",
+    "ele",
+    "das",
+    "tem",
+    "à",
+    "seu",
+    "sua",
+    "ou",
+    "ser",
+    "quando",
+    "muito",
+    "há",
+    "nos",
+    "já",
+    "está",
+    "eu",
+    "também",
+    "só",
+    "pelo",
+    "pela",
+    "até",
+    "isso",
+    "ela",
+    "entre",
+    "era",
+    "depois",
+    "sem",
+    "mesmo",
+    "aos",
+    "ter",
+    "seus",
+    "quem",
+    "nas",
+    "me",
+    "esse",
+    "eles",
+    "estão",
+    "você",
+    "tinha",
+    "foram",
+    "essa",
+    "num",
+    "nem",
+    "suas",
+    "meu",
+    "às",
+    "minha",
+    "têm",
+    "numa",
+    "pelos",
+    "elas",
+    "havia",
+    "seja",
+    "qual",
+    "será",
+    "nós",
+    "tenho",
+    "lhe",
+    "deles",
+    "essas",
+    "esses",
+    "pelas",
+    "este",
+    "fosse",
+    "dele",
+    "tu",
+    "te",
+    "vocês",
+    "vos",
+    "lhes",
+    "meus",
+    "minhas",
+    "teu",
+    "tua",
+    "teus",
+    "tuas",
+    "nosso",
+    "nossa",
+    "nossos",
+    "nossas",
+    "dela",
+    "delas",
+    "esta",
+    "estes",
+    "estas",
+    "aquele",
+    "aquela",
+    "aqueles",
+    "aquelas",
+    "isto",
+    "aquilo",
 }
 
 # Stopwords em inglês para comparação
 _EN_STOPWORDS: Set[str] = {
-    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
-    "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-    "this", "but", "his", "by", "from", "they", "we", "say", "her",
-    "she", "or", "an", "will", "my", "one", "all", "would", "there",
-    "their", "what", "so", "up", "out", "if", "about", "who", "get",
-    "which", "go", "me", "when", "make", "can", "like", "time", "no",
-    "just", "him", "know", "take", "people", "into", "year", "your",
-    "good", "some", "could", "them", "see", "other", "than", "then",
+    "the",
+    "be",
+    "to",
+    "of",
+    "and",
+    "a",
+    "in",
+    "that",
+    "have",
+    "i",
+    "it",
+    "for",
+    "not",
+    "on",
+    "with",
+    "he",
+    "as",
+    "you",
+    "do",
+    "at",
+    "this",
+    "but",
+    "his",
+    "by",
+    "from",
+    "they",
+    "we",
+    "say",
+    "her",
+    "she",
+    "or",
+    "an",
+    "will",
+    "my",
+    "one",
+    "all",
+    "would",
+    "there",
+    "their",
+    "what",
+    "so",
+    "up",
+    "out",
+    "if",
+    "about",
+    "who",
+    "get",
+    "which",
+    "go",
+    "me",
+    "when",
+    "make",
+    "can",
+    "like",
+    "time",
+    "no",
+    "just",
+    "him",
+    "know",
+    "take",
+    "people",
+    "into",
+    "year",
+    "your",
+    "good",
+    "some",
+    "could",
+    "them",
+    "see",
+    "other",
+    "than",
+    "then",
 }
 
 # Palavras-chave indicativas de toxicidade (lista mínima para heurística)
 # TODO: substituir por classificador treinado (e.g., detoxify, perspectiveAPI)
 _TOXIC_KEYWORDS: Set[str] = {
-    "idiota", "imbecil", "burro", "estúpido", "lixo", "nojento",
-    "merda", "porra", "caralho", "puta", "fdp", "arrombado",
-    "desgraçado", "vagabundo", "cretino", "otário", "babaca",
+    "idiota",
+    "imbecil",
+    "burro",
+    "estúpido",
+    "lixo",
+    "nojento",
+    "merda",
+    "porra",
+    "caralho",
+    "puta",
+    "fdp",
+    "arrombado",
+    "desgraçado",
+    "vagabundo",
+    "cretino",
+    "otário",
+    "babaca",
 }
 
 # Padrões regex para detecção de PII
 _PII_PATTERNS = {
     "cpf": re.compile(r"\b\d{3}[.\-]?\d{3}[.\-]?\d{3}[.\-/]?\d{2}\b"),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "telefone": re.compile(
-        r"\b(?:\+55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-.\s]?\d{4}\b"
-    ),
+    "telefone": re.compile(r"\b(?:\+55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-.\s]?\d{4}\b"),
     "cartao_credito": re.compile(r"\b\d{4}[\s.-]?\d{4}[\s.-]?\d{4}[\s.-]?\d{4}\b"),
 }
 
@@ -91,6 +271,14 @@ class DocumentQuality:
     toxicity_score: float  # 0.0 a 1.0
     cluster_id: Optional[int] = None
     is_duplicate: bool = False
+    # Índice do documento no dataset bruto original (raw_dataset) que gerou
+    # este registro. Como build_manifest pula documentos com texto vazio sem
+    # inserir um placeholder, a posição do registro na lista `records` NÃO
+    # coincide, em geral, com o índice no dataset original — este campo é a
+    # fonte da verdade para mapear de volta para o espaço de índices do
+    # dataset bruto (ex.: em filter_by_quality). Default -1 mantém
+    # compatibilidade com manifestos salvos antes deste campo existir.
+    raw_index: int = -1
 
 
 class QualityManifest:
@@ -292,7 +480,9 @@ class QualityManifest:
             # Extrai texto do exemplo
             if isinstance(example, dict):
                 text = example.get(text_column, "")
-                domain = example.get(domain_column, default_domain) if domain_column else default_domain
+                domain = (
+                    example.get(domain_column, default_domain) if domain_column else default_domain
+                )
             elif isinstance(example, str):
                 text = example
                 domain = default_domain
@@ -301,6 +491,11 @@ class QualityManifest:
                 domain = default_domain
 
             if not text:
+                # Pula documentos vazios sem inserir um placeholder em
+                # `records`. Isso desalinharia a posição do registro com o
+                # índice do dataset bruto se não fosse pelo campo
+                # `raw_index` (abaixo), que preserva o índice original `idx`
+                # independentemente de quantos documentos vazios foram pulados.
                 continue
 
             n_chars = len(text)
@@ -324,6 +519,7 @@ class QualityManifest:
                 toxicity_score=toxicity_score,
                 cluster_id=None,
                 is_duplicate=False,
+                raw_index=idx,
             )
             self.records.append(record)
 
@@ -351,11 +547,14 @@ class QualityManifest:
             exclude_duplicates: Se True, exclui documentos marcados como duplicados.
 
         Returns:
-            Lista de índices dos documentos que passaram nos filtros.
+            Lista de índices no dataset bruto original (raw_dataset) dos
+            documentos que passaram nos filtros — NÃO posições na lista
+            `self.records` (que pode ter menos elementos que o dataset
+            bruto devido a documentos vazios pulados em build_manifest).
         """
         filtered_indices = []
 
-        for idx, record in enumerate(self.records):
+        for record in self.records:
             # Aplica filtros
             if record.quality_score < min_score:
                 continue
@@ -368,7 +567,7 @@ class QualityManifest:
             if exclude_duplicates and record.is_duplicate:
                 continue
 
-            filtered_indices.append(idx)
+            filtered_indices.append(record.raw_index)
 
         return filtered_indices
 
@@ -389,7 +588,11 @@ class QualityManifest:
             pq.write_table(table, str(output_path))
         else:
             # Fallback para JSON
-            json_path = output_path.with_suffix(".json") if output_path.suffix == ".parquet" else output_path
+            json_path = (
+                output_path.with_suffix(".json")
+                if output_path.suffix == ".parquet"
+                else output_path
+            )
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(records_dicts, f, ensure_ascii=False, indent=2)
 
@@ -478,12 +681,8 @@ class QualityManifest:
         total = len(self.records)
         stats["_global"] = {
             "total_documents": total,
-            "avg_quality": round(
-                sum(r.quality_score for r in self.records) / total, 4
-            ),
-            "avg_length": round(
-                sum(r.n_words for r in self.records) / total, 2
-            ),
+            "avg_quality": round(sum(r.quality_score for r in self.records) / total, 4),
+            "avg_length": round(sum(r.n_words for r in self.records) / total, 2),
             "total_pii": sum(1 for r in self.records if r.has_pii),
             "total_duplicates": sum(1 for r in self.records if r.is_duplicate),
             "domains": list(domain_groups.keys()),

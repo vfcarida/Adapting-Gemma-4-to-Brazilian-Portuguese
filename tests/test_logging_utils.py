@@ -1,14 +1,13 @@
 """Tests for logging utilities."""
 
 import json
-import pytest
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.utils.logging_utils import get_logger, MetricsLogger
+from src.utils.logging_utils import MetricsLogger, get_logger
 
 
 class TestGetLogger:
@@ -32,6 +31,7 @@ class TestGetLogger:
     def test_log_level_respected(self):
         logger = get_logger("test_level", level="ERROR")
         import logging
+
         assert logger.level == logging.ERROR
 
 

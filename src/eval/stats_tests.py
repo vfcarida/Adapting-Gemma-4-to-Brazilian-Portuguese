@@ -49,9 +49,7 @@ def paired_permutation_test(
     b = np.asarray(scores_b, dtype=float)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     if len(a) < 2:
         raise ValueError("Necessário pelo menos 2 amostras para o teste de permutação.")
@@ -119,9 +117,7 @@ def mcnemar_test(
     b = np.asarray(correct_b, dtype=int)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     if len(a) == 0:
         return {"statistic": 0.0, "p_value": 1.0}
@@ -178,9 +174,7 @@ def wilcoxon_signed_rank(
     b = np.asarray(scores_b, dtype=float)
 
     if len(a) != len(b):
-        raise ValueError(
-            f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
-        )
+        raise ValueError(f"Arrays devem ter o mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}")
 
     # Arrays idênticos
     if np.array_equal(a, b):
@@ -213,6 +207,7 @@ def wilcoxon_signed_rank(
 def compute_effect_size(
     scores_a: list | np.ndarray,
     scores_b: list | np.ndarray,
+    paired: bool = True,
 ) -> dict[str, Any]:
     """Calcula o tamanho de efeito (d de Cohen) entre dois conjuntos de scores.
 
@@ -225,6 +220,14 @@ def compute_effect_size(
     Args:
         scores_a: Scores do modelo A.
         scores_b: Scores do modelo B.
+        paired: If True (default — correct for this codebase's actual use
+            case, comparing two models scored on the SAME benchmark items),
+            uses Cohen's d_z = mean(a - b) / std(a - b), the paired-samples
+            effect size. If False, uses the classic independent-groups
+            pooled-SD d — only appropriate when `scores_a`/`scores_b` are
+            unrelated samples (different, unpaired items), which was this
+            function's previous unconditional (and, for every actual caller
+            in this project, incorrect) behavior.
 
     Returns:
         Dict com cohens_d (valor numérico) e interpretation (string).
@@ -235,21 +238,32 @@ def compute_effect_size(
     if len(a) < 2 or len(b) < 2:
         return {"cohens_d": 0.0, "interpretation": "insuficiente (n < 2)"}
 
-    # Desvio padrão pooled
-    n_a, n_b = len(a), len(b)
-    var_a = np.var(a, ddof=1)
-    var_b = np.var(b, ddof=1)
+    if paired:
+        if len(a) != len(b):
+            raise ValueError(
+                f"paired=True requer arrays do mesmo tamanho: len(a)={len(a)}, len(b)={len(b)}"
+            )
+        diffs = a - b
+        std_diff = np.std(diffs, ddof=1)
+        if std_diff == 0:
+            if np.mean(diffs) == 0:
+                return {"cohens_d": 0.0, "interpretation": "negligível"}
+            return {"cohens_d": float("inf"), "interpretation": "indeterminado (std=0)"}
+        d = float(np.mean(diffs) / std_diff)
+    else:
+        # Desvio padrão pooled (grupos independentes)
+        n_a, n_b = len(a), len(b)
+        var_a = np.var(a, ddof=1)
+        var_b = np.var(b, ddof=1)
 
-    pooled_std = np.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / (n_a + n_b - 2))
+        pooled_std = np.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / (n_a + n_b - 2))
 
-    if pooled_std == 0:
-        # Sem variabilidade
-        if np.mean(a) == np.mean(b):
-            return {"cohens_d": 0.0, "interpretation": "negligível"}
-        else:
+        if pooled_std == 0:
+            if np.mean(a) == np.mean(b):
+                return {"cohens_d": 0.0, "interpretation": "negligível"}
             return {"cohens_d": float("inf"), "interpretation": "indeterminado (std=0)"}
 
-    d = float((np.mean(a) - np.mean(b)) / pooled_std)
+        d = float((np.mean(a) - np.mean(b)) / pooled_std)
 
     abs_d = abs(d)
     if abs_d < 0.2:
@@ -308,8 +322,6 @@ def multiple_comparison_correction(
             corrected[idx] = min(cummax, 1.0)
 
     else:
-        raise ValueError(
-            f"Método desconhecido: '{method}'. Use 'holm' ou 'bonferroni'."
-        )
+        raise ValueError(f"Método desconhecido: '{method}'. Use 'holm' ou 'bonferroni'.")
 
     return corrected

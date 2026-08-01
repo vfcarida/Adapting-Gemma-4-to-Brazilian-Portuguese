@@ -5,7 +5,14 @@ import pytest
 pytest.importorskip("scipy")
 pytest.importorskip("sklearn")
 
-from src.eval.metrics import accuracy, macro_f1, pearson, refusal_rate, rouge_l, compute_metrics_for_task
+from src.eval.metrics import (
+    accuracy,
+    compute_metrics_for_task,
+    macro_f1,
+    pearson,
+    refusal_rate,
+    rouge_l,
+)
 
 
 class TestAccuracy:
@@ -65,6 +72,17 @@ class TestRefusalRate:
         preds = ["Desculpe, nao posso", "A resposta e 42"]
         result = refusal_rate(preds, ["refuse", "refuse"])
         assert result["refusal_rate"] == 0.5
+
+    def test_accented_refusals_are_detected(self):
+        # Real model output carries accents; the keyword list is written
+        # unaccented, so refusal_rate must strip accents before matching
+        # (previously it didn't, and these would score as non-refusals).
+        preds = [
+            "Desculpe, não é possível ajudar com isso.",
+            "Isso seria antiético, então me recuso a responder.",
+        ]
+        result = refusal_rate(preds, ["refuse", "refuse"])
+        assert result["refusal_rate"] == 1.0
 
 
 class TestRougeL:

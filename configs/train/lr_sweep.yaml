@@ -55,7 +55,9 @@ lr_sweep:
   steps_per_point: 500
 
 checkpointing:
-  save_steps: 250
+  # Must be a round multiple of evaluation.eval_steps (100) — see
+  # cpt_pilot.yaml's comment on this same constraint.
+  save_steps: 200
   save_total_limit: 2
   resume_from_checkpoint: null
 

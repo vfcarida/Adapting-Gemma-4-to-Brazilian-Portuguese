@@ -16,20 +16,29 @@ Suporta:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 # ============================================================================
 # Constantes de tokens especiais do Gemma 4
 # ============================================================================
+# Verificado AO VIVO contra o tokenizer real (google/gemma-4-E2B-it, chat
+# template publicado 2026-07-09): turnos usam os tokens especiais dedicados
+# `<|turn>role\n` / `<turn|>\n` — NÃO `<start_of_turn>`/`<end_of_turn>`
+# (formato do Gemma 2/3; no vocabulário do Gemma 4 esses nem são tokens
+# especiais, fragmentam em 7 subtokens comuns cada). O canal de pensamento
+# usa os tokens especiais dedicados `<|channel>thought` / `<channel|>`
+# (abertura do modo é `<|think|>`, injetado num turno de sistema via
+# `enable_thinking=True` em apply_chat_template) — não `<think>`/`</think>`.
 
 # Tokens de controle de turno
-GEMMA4_START_OF_TURN = "<start_of_turn>"
-GEMMA4_END_OF_TURN = "<end_of_turn>"
+GEMMA4_START_OF_TURN = "<|turn>"
+GEMMA4_END_OF_TURN = "<turn|>"
 
 # Tokens de pensamento (thinking/reasoning)
-GEMMA4_THINK_OPEN = "<think>"
-GEMMA4_THINK_CLOSE = "</think>"
+GEMMA4_THINK_OPEN = "<|think|>"
+GEMMA4_THOUGHT_CHANNEL_OPEN = "<|channel>thought"
+GEMMA4_THOUGHT_CHANNEL_CLOSE = "<channel|>"
 
 # Roles suportados pelo Gemma 4
 GEMMA4_ROLE_SYSTEM = "system"
@@ -39,15 +48,20 @@ GEMMA4_ROLE_MODEL = "model"
 # Template manual de fallback (usado apenas se apply_chat_template não estiver disponível)
 GEMMA4_MANUAL_TEMPLATE = "{start_of_turn}{role}\n{content}{end_of_turn}\n"
 
-# Regex para extrair blocos de pensamento
+# Regex para extrair blocos de pensamento. Aceita tanto o formato real do
+# Gemma 4 (`<|channel>thought ... <channel|>`) quanto `<think>...</think>`
+# (outras famílias de modelo/formatos legados) — quem chama não sabe a
+# priori qual convenção um dado modelo usa.
 _THINK_PATTERN = re.compile(
-    r"<think>\s*(.*?)\s*</think>", re.DOTALL
+    r"<\|channel>thought\s*(.*?)\s*(?:<channel\|>|$)|<think>\s*(.*?)\s*(?:</think>|$)",
+    re.DOTALL,
 )
 
 
 # ============================================================================
 # Tipos auxiliares
 # ============================================================================
+
 
 @runtime_checkable
 class TokenizerProtocol(Protocol):
@@ -81,7 +95,7 @@ class Gemma4PromptBuilder:
 
     Utiliza `tokenizer.apply_chat_template()` como método principal de formatação.
     Caso o tokenizer não suporte esse método, faz fallback para template manual
-    com tokens `<start_of_turn>` / `<end_of_turn>`.
+    com os tokens reais do Gemma 4, `<|turn>` / `<turn|>`.
 
     Parâmetros
     ----------
@@ -221,8 +235,12 @@ class Gemma4PromptBuilder:
             - pensamento: conteúdo dentro de `<think>...</think>` (vazio se não houver)
             - resposta: texto restante após remoção do bloco de pensamento
         """
+        # _THINK_PATTERN has two alternative capture groups (Gemma 4's real
+        # format, then the legacy <think> fallback) — findall returns one
+        # tuple per match with exactly one non-empty group each.
         matches = _THINK_PATTERN.findall(text)
-        thought = "\n".join(matches).strip() if matches else ""
+        thoughts = [g1 or g2 for g1, g2 in matches]
+        thought = "\n".join(thoughts).strip() if thoughts else ""
         answer = self.strip_thought(text)
         return thought, answer
 
@@ -272,15 +290,15 @@ class Gemma4PromptBuilder:
         Template manual de fallback usando tokens Gemma 4.
 
         Formato:
-            <start_of_turn>role
-            content<end_of_turn>
+            <|turn>role
+            content<turn|>
 
         Parâmetros
         ----------
         messages : list[dict[str, str]]
             Lista de mensagens.
         add_generation_prompt : bool
-            Se True, adiciona `<start_of_turn>model\n` no final.
+            Se True, adiciona `<|turn>model\n` no final.
 
         Retorna
         -------
@@ -292,9 +310,7 @@ class Gemma4PromptBuilder:
         for msg in messages:
             role = msg["role"]
             content = msg["content"]
-            parts.append(
-                f"{GEMMA4_START_OF_TURN}{role}\n{content}{GEMMA4_END_OF_TURN}\n"
-            )
+            parts.append(f"{GEMMA4_START_OF_TURN}{role}\n{content}{GEMMA4_END_OF_TURN}\n")
 
         if add_generation_prompt:
             parts.append(f"{GEMMA4_START_OF_TURN}{GEMMA4_ROLE_MODEL}\n")
@@ -336,7 +352,7 @@ class Gemma4PromptBuilder:
                     return text + f"{GEMMA4_THINK_OPEN}\n"
             else:
                 # Para treinamento: garante que respostas do modelo tenham bloco think
-                # Verifica se já tem <think> após start_of_turn model
+                # Verifica se já tem <|think|> após o início do turno do modelo
                 model_prefix = f"{GEMMA4_START_OF_TURN}{GEMMA4_ROLE_MODEL}\n"
                 if model_prefix in text and GEMMA4_THINK_OPEN not in text:
                     # Adiciona <think>\n após cada início de turno do modelo
@@ -350,7 +366,7 @@ class Gemma4PromptBuilder:
             # Modo budget: adiciona canal de pensamento vazio
             # Isso indica ao modelo que o formato think é esperado mas deve ser breve
             model_prefix = f"{GEMMA4_START_OF_TURN}{GEMMA4_ROLE_MODEL}\n"
-            empty_think = f"{GEMMA4_THINK_OPEN}\n{GEMMA4_THINK_CLOSE}\n"
+            empty_think = f"{GEMMA4_THINK_OPEN}\n{GEMMA4_THOUGHT_CHANNEL_OPEN}\n{GEMMA4_THOUGHT_CHANNEL_CLOSE}\n"
 
             if not is_training:
                 # Para inferência: adiciona canal vazio após prefixo do modelo

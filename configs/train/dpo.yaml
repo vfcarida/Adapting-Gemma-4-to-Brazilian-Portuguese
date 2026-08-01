@@ -36,9 +36,13 @@ dpo:
   loss_type: "sigmoid"
   max_prompt_length: 1024
   max_length: 2048
-  # Preference dataset (placeholder - needs pt-BR preference data)
-  dataset_hub_id: null
-  dataset_path: "data/preferences_ptbr.jsonl"
+  # Real, ungated, apache-2.0 Portuguese preference dataset (prompt/chosen/
+  # rejected as plain strings — matches _load_preference_data's expected
+  # schema exactly). 19,279 rows. Verified to exist on the HF Hub.
+  # Swap for your own curated preferences when available; DPO remains an
+  # optional/experimental stage (CPT → SFT are the primary pipeline).
+  dataset_hub_id: "celsowm/gemini_orpo_dpo_ptbr"
+  dataset_path: null
 
 checkpointing:
   save_steps: 500
@@ -46,7 +50,7 @@ checkpointing:
 
 logging:
   logging_steps: 10
-  report_to: ["json"]
+  report_to: ["none"]
   log_file: "outputs/dpo/train_log.jsonl"
 
 output:

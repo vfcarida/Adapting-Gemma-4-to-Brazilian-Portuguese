@@ -26,18 +26,95 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
+from peft import get_peft_model, prepare_model_for_kbit_training
+from trl import SFTConfig, SFTTrainer
 
 from src.data.instruction_data_builder import InstructionDataBuilder, format_gemma4_chat
-from src.train.callbacks import ThroughputCallback, LocalMetricsCallback, WandBCallback
+from src.train.callbacks import LocalMetricsCallback, ThroughputCallback, WandBCallback
+from src.train.peft_factories import create_peft_config
 from src.utils.checkpointing import find_latest_checkpoint, save_training_state
 from src.utils.config_utils import load_config
 from src.utils.hf_utils import load_model_for_training, load_tokenizer
-from src.utils.logging_utils import MetricsLogger, get_logger
+from src.utils.logging_utils import MetricsLogger, get_logger, resolve_report_to
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
+
+
+class CompletionOnlyCollator:
+    """Mask the prompt out of the SFT loss, leaving only assistant turns.
+
+    TRL removed the classic `DataCollatorForCompletionOnlyLM` from its public
+    API in the 1.x line (verified against the installed `trl` package: it no
+    longer exports that name). TRL's replacements — `completion_only_loss`
+    and `assistant_only_loss` on `SFTConfig` — don't fit this pipeline:
+    `completion_only_loss` is documented as incompatible with a
+    `formatting_func` (which this trainer uses to render
+    `format_gemma4_chat`), and `assistant_only_loss` requires
+    `apply_chat_template(..., return_assistant_tokens_mask=True)` with a
+    tokenizer chat template that has `{% generation %}` markers, which isn't
+    guaranteed for the hand-rolled Gemma 4 template this project uses. This
+    class reimplements the same idea directly: find the tokenized
+    `response_template` as a subsequence of each example's `input_ids`, and
+    unmask (train on) only the span from right after each match to the next
+    `<|turn>` (any role) or end of sequence — mirroring the fixed multi-turn
+    masking logic in `src.data.instruction_data_builder._mask_prompt_tokens`.
+
+    Uses Gemma 4's real turn marker `<|turn>` (a dedicated special token —
+    verified live against the tokenizer's own chat template), not Gemma
+    2/3's `<start_of_turn>`.
+    """
+
+    def __init__(self, response_template: str, tokenizer, pad_to_multiple_of: int | None = None):
+        self.tokenizer = tokenizer
+        self.response_ids = tokenizer.encode(response_template, add_special_tokens=False)
+        self.turn_start_ids = tokenizer.encode("<|turn>", add_special_tokens=False)
+        self.pad_to_multiple_of = pad_to_multiple_of
+        if not self.response_ids:
+            raise ValueError(
+                f"response_template {response_template!r} tokenized to an empty sequence"
+            )
+
+    @staticmethod
+    def _find(haystack: list[int], needle: list[int], start: int = 0) -> int:
+        n = len(needle)
+        for i in range(start, len(haystack) - n + 1):
+            if haystack[i : i + n] == needle:
+                return i
+        return -1
+
+    def __call__(self, features: list[dict]) -> dict[str, torch.Tensor]:
+        batch = self.tokenizer.pad(
+            [{"input_ids": f["input_ids"]} for f in features],
+            padding=True,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
+        )
+        labels = torch.full_like(batch["input_ids"], -100)
+        resp_len = len(self.response_ids)
+
+        for i in range(batch["input_ids"].shape[0]):
+            ids = batch["input_ids"][i].tolist()
+            pos, found_any = 0, False
+            while True:
+                start = self._find(ids, self.response_ids, pos)
+                if start == -1:
+                    break
+                found_any = True
+                content_start = start + resp_len
+                next_turn = self._find(ids, self.turn_start_ids, content_start)
+                content_end = next_turn if next_turn != -1 else len(ids)
+                labels[i, content_start:content_end] = batch["input_ids"][
+                    i, content_start:content_end
+                ]
+                pos = content_end
+            if not found_any:
+                logger.warning(
+                    "CompletionOnlyCollator: response_template not found in an "
+                    "example — its loss is fully masked (labels all -100)."
+                )
+        batch["labels"] = labels
+        return batch
 
 
 class SFTTrainerWrapper:
@@ -116,24 +193,14 @@ class SFTTrainerWrapper:
             model_config=model_cfg,
         )
 
-        # Apply LoRA adapters for parameter-efficient fine-tuning
+        # Apply LoRA/DoRA adapters for parameter-efficient fine-tuning
         if use_lora:
             # prepare_model_for_kbit_training freezes the base and enables
             # gradient computation only on LoRA parameters
             model = prepare_model_for_kbit_training(model)
             lora_cfg = self.config.get("lora", {})
-            peft_config = LoraConfig(
-                r=lora_cfg.get("r", 32),
-                lora_alpha=lora_cfg.get("lora_alpha", 64),
-                lora_dropout=lora_cfg.get("lora_dropout", 0.05),
-                # Target all linear layers in the transformer for best results
-                target_modules=lora_cfg.get("target_modules", [
-                    "q_proj", "k_proj", "v_proj", "o_proj",
-                    "gate_proj", "up_proj", "down_proj",
-                ]),
-                task_type="CAUSAL_LM",
-                bias="none",
-            )
+            peft_method = self.train_cfg.get("peft_method", "lora")
+            peft_config = create_peft_config(peft_method, lora_cfg)
             model = get_peft_model(model, peft_config)
             model.print_trainable_parameters()
 
@@ -178,11 +245,25 @@ class SFTTrainerWrapper:
             save_steps=self.config.get("checkpointing", {}).get("save_steps", 200),
             save_total_limit=self.config.get("checkpointing", {}).get("save_total_limit", 5),
             seed=self.seed,
-            # SFT-specific: sequence length and packing
-            max_seq_length=self.sft_cfg.get("max_seq_length", 4096),
+            # SFT-specific: sequence length and packing. TRL renamed
+            # `max_seq_length` -> `max_length` on SFTConfig; the old name
+            # raises TypeError on current trl (see pyproject.toml pin).
+            max_length=self.sft_cfg.get("max_seq_length", 4096),
             packing=self.sft_cfg.get("packing", False),
-            report_to=self.config.get("logging", {}).get("report_to", ["none"]),
+            report_to=resolve_report_to(self.config.get("logging", {}).get("report_to")),
         )
+
+        # Mask the prompt out of the loss when configured to train on
+        # completions only (see CompletionOnlyCollator docstring above for
+        # why this isn't TRL's built-in DataCollatorForCompletionOnlyLM,
+        # which no longer exists in trl>=1.0).
+        data_collator = None
+        if self.sft_cfg.get("train_on_completions_only", False):
+            response_template = self.sft_cfg.get("response_template", "<|turn>model\n")
+            data_collator = CompletionOnlyCollator(
+                response_template=response_template,
+                tokenizer=tokenizer,
+            )
 
         # Initialize SFT Trainer with custom callbacks for monitoring
         trainer = SFTTrainer(
@@ -191,8 +272,11 @@ class SFTTrainerWrapper:
             train_dataset=instruction_dataset,
             processing_class=tokenizer,
             formatting_func=formatting_func,
+            data_collator=data_collator,
             callbacks=[
-                ThroughputCallback(metrics_logger),
+                ThroughputCallback(
+                    metrics_logger, seq_length=self.sft_cfg.get("max_seq_length", 4096)
+                ),
                 LocalMetricsCallback(metrics_logger),
                 WandBCallback(
                     project="gemma4-pt-br-adaptation",
@@ -211,15 +295,17 @@ class SFTTrainerWrapper:
         resume_from = find_latest_checkpoint(self.output_dir)
         train_result = trainer.train(resume_from_checkpoint=resume_from)
 
-        # Save final model (LoRA adapters or full weights)
+        # Save final model (LoRA adapters or full weights). Only the main
+        # process writes files (see cpt_trainer.py's save block for why).
         final_dir = self.output_dir / "final"
-        if use_lora:
-            # Save only the LoRA adapter weights (small, ~50-200MB)
-            model.save_pretrained(final_dir)
-        else:
-            # Save full model weights
-            trainer.save_model(final_dir)
-        tokenizer.save_pretrained(final_dir)
+        if trainer.is_world_process_zero():
+            if use_lora:
+                # Save only the LoRA adapter weights (small, ~50-200MB)
+                model.save_pretrained(final_dir)
+            else:
+                # Save full model weights
+                trainer.save_model(final_dir)
+            tokenizer.save_pretrained(final_dir)
 
         # Record training state for reproducibility
         elapsed = time.time() - start_time
@@ -231,10 +317,15 @@ class SFTTrainerWrapper:
                 "metrics": train_result.metrics,
             },
             "elapsed_seconds": elapsed,
-            "base_checkpoint": str(base_checkpoint),
+            # `model_id` (not the raw `base_checkpoint` config value) records
+            # what was ACTUALLY loaded — base_checkpoint is None whenever
+            # falling back to the base model, which previously wrote the
+            # literal string "None" here.
+            "base_model_id": model_id,
             "use_lora": use_lora,
         }
-        save_training_state(final_dir, state)
+        if trainer.is_world_process_zero():
+            save_training_state(final_dir, state)
 
         logger.info(f"SFT completed in {elapsed:.1f}s. Model saved to {final_dir}")
         return state

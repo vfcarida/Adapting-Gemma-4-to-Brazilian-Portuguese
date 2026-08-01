@@ -9,11 +9,12 @@ vazamento de near-duplicates entre treino e validação.
 import hashlib
 import random
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 # Tentativa de importar datasketch para MinHash LSH
 try:
     from datasketch import MinHash, MinHashLSH
+
     HAS_DATASKETCH = True
 except ImportError:
     HAS_DATASKETCH = False
@@ -37,19 +38,25 @@ class ClusterDedup:
 
     def _get_shingles(self, text: str, k: int = 5) -> Set[str]:
         """
-        Extrai k-shingles (substrings de tamanho k) do texto.
+        Extrai k-shingles de PALAVRAS (n-gramas de k palavras) do texto.
+
+        Usa n-gramas em nível de palavra (mesma abordagem de
+        `contamination_checks.py`'s `ngrams()`), em vez de substrings de
+        caracteres — shingles de caracteres inflam artificialmente a
+        similaridade de Jaccard em documentos longos, prejudicando a
+        detecção de near-duplicates via MinHash.
 
         Args:
             text: Texto de entrada.
-            k: Tamanho dos shingles.
+            k: Número de palavras por shingle.
 
         Returns:
-            Conjunto de shingles únicos.
+            Conjunto de shingles (janelas de k palavras) únicos.
         """
-        text = text.lower().strip()
-        if len(text) < k:
-            return {text}
-        return {text[i:i + k] for i in range(len(text) - k + 1)}
+        words = text.lower().split()
+        if len(words) < k:
+            return {" ".join(words)}
+        return {" ".join(words[i : i + k]) for i in range(len(words) - k + 1)}
 
     def _build_minhash(self, shingles: Set[str], num_perm: int = 128) -> "MinHash":
         """
@@ -112,16 +119,12 @@ class ClusterDedup:
 
         # Conta duplicatas (documentos em clusters com mais de 1 membro)
         self._n_duplicates_removed = sum(
-            len(members) - 1
-            for members in self._clusters.values()
-            if len(members) > 1
+            len(members) - 1 for members in self._clusters.values() if len(members) > 1
         )
 
         return self._cluster_map.copy()
 
-    def _build_clusters_minhash(
-        self, texts: List[str], threshold: float, num_perm: int
-    ) -> None:
+    def _build_clusters_minhash(self, texts: List[str], threshold: float, num_perm: int) -> None:
         """
         Constrói clusters usando MinHash LSH.
 
@@ -249,9 +252,7 @@ class ClusterDedup:
             cluster_map = self._cluster_map
 
         if not cluster_map:
-            raise ValueError(
-                "Nenhum cluster encontrado. Execute build_clusters() primeiro."
-            )
+            raise ValueError("Nenhum cluster encontrado. Execute build_clusters() primeiro.")
 
         # Reconstrói mapeamento cluster_id → [doc_indices]
         clusters: Dict[int, List[int]] = defaultdict(list)
@@ -315,9 +316,7 @@ class ClusterDedup:
         n_original = self._original_size
         n_unique = n_original - self._n_duplicates_removed
 
-        dedup_ratio = (
-            self._n_duplicates_removed / n_original if n_original > 0 else 0.0
-        )
+        dedup_ratio = self._n_duplicates_removed / n_original if n_original > 0 else 0.0
 
         method = "minhash_lsh" if HAS_DATASKETCH else "exact_hash"
 

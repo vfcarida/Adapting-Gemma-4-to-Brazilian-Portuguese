@@ -1,50 +1,61 @@
 """Testes para formatação de templates de prompt."""
 
-import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.eval.prompt_templates import (
-    TaskPromptTemplate,
-    get_prompt_template,
-    _wrap_gemma4_legacy,
-    strip_thought,
-    extract_thought,
-    PromptBuilder,
-    TASK_INSTRUCTIONS,
     TASK_FORMATTERS,
+    TASK_INSTRUCTIONS,
+    PromptBuilder,
+    TaskPromptTemplate,
+    _wrap_gemma4_legacy,
+    extract_thought,
+    get_prompt_template,
+    strip_thought,
 )
 
 
 class TestGemma4Wrapping:
-    """Testa formatação do chat template Gemma 4."""
+    """Testa formatação do chat template Gemma 4.
+
+    Marcadores verificados ao vivo contra o tokenizer real
+    (google/gemma-4-E2B-it, template publicado 2026-07-09): turnos usam os
+    tokens especiais dedicados `<|turn>role\\n` / `<turn|>\\n` (não
+    `<start_of_turn>`/`<end_of_turn>`, que no Gemma 4 nem são tokens
+    especiais), e "thinking" usa o token especial `<|think|>` (não uma
+    string `<think>` literal) — ver o docstring do módulo.
+    """
 
     def test_basic_wrap_think_off(self):
         result = _wrap_gemma4_legacy("Hello", think_mode="off")
-        assert result.startswith("<bos><start_of_turn>user\n")
+        assert result.startswith("<|turn>user\n")
         assert "Hello" in result
-        assert result.endswith("<end_of_turn>\n<start_of_turn>model\n")
-        assert "<think>" not in result
+        assert result.endswith("<turn|>\n<|turn>model\n")
+        assert "<|think|>" not in result
 
     def test_basic_wrap_think_on(self):
         result = _wrap_gemma4_legacy("Hello", think_mode="on")
-        assert result.endswith("<start_of_turn>model\n<think>\n")
-        assert "<think>" in result
-
-    def test_empty_channel(self):
-        result = _wrap_gemma4_legacy("Hello", think_mode="empty_channel")
-        assert "<think>\n</think>\n" in result
+        assert result.endswith("<|turn>model\n<|think|>\n")
+        assert "<|think|>" in result
 
     def test_preserves_content(self):
         content = "Qual é a capital do Brasil?"
         result = _wrap_gemma4_legacy(content)
         assert content in result
 
-    def test_bos_token_present(self):
+    def test_no_literal_bos_token(self):
+        """_wrap_gemma4_legacy must NOT hardcode a literal "<bos>" prefix.
+
+        The tokenizer is responsible for adding the BOS token (via the
+        default add_special_tokens=True) when encoding the returned string.
+        A hardcoded "<bos>" here would produce a duplicate BOS at
+        tokenization time.
+        """
         result = _wrap_gemma4_legacy("test")
-        assert result.startswith("<bos>")
+        assert not result.startswith("<bos>")
+        assert result.startswith("<|turn>user\n")
 
 
 class TestStripThought:
@@ -82,9 +93,9 @@ class TestPromptBuilder:
     def test_chat_model_fallback_gemma4(self):
         builder = PromptBuilder(tokenizer=None, is_chat_model=True)
         result = builder.format_prompt(None, "Pergunta teste", think_mode="off")
-        assert "<start_of_turn>user" in result
+        assert "<|turn>user" in result
         assert "Pergunta teste" in result
-        assert "<start_of_turn>model" in result
+        assert "<|turn>model" in result
 
     def test_chat_model_with_system(self):
         builder = PromptBuilder(tokenizer=None, is_chat_model=True)
@@ -95,7 +106,7 @@ class TestPromptBuilder:
     def test_think_on_adds_think_tag(self):
         builder = PromptBuilder(tokenizer=None, is_chat_model=True)
         result = builder.format_prompt(None, "test", think_mode="on")
-        assert result.endswith("<think>\n")
+        assert result.endswith("<|think|>\n")
 
 
 class TestTaskPromptTemplate:
@@ -135,26 +146,60 @@ class TestTaskPromptTemplate:
         template = get_prompt_template("enem", num_shots=0)
         example = {"question": "Test?", "options": ["A", "B"], "answer": "A"}
         prompt = template.format_prompt(example, think_mode="on")
-        assert "<think>" in prompt
+        assert "<|think|>" in prompt
 
     def test_all_tasks_have_instructions(self):
         expected_tasks = [
-            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
-            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
-            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
-            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
-            "mmlu_en", "hellaswag_en", "arc_en",
+            "enem",
+            "bluex",
+            "assin2_rte",
+            "assin2_sts",
+            "copa_pt",
+            "boolq_pt",
+            "mrpc_pt",
+            "rte_pt",
+            "hatebr",
+            "tweet_sentbr",
+            "oab_bench",
+            "broverbs",
+            "capitu",
+            "math_pt",
+            "lener_br",
+            "legalbench_br",
+            "publichearing_br",
+            "donotanswer_pt",
+            "xlsum_pt",
+            "mmlu_en",
+            "hellaswag_en",
+            "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_INSTRUCTIONS, f"Faltando instrução para {task}"
 
     def test_all_tasks_have_formatters(self):
         expected_tasks = [
-            "enem", "bluex", "assin2_rte", "assin2_sts", "copa_pt",
-            "boolq_pt", "mrpc_pt", "rte_pt", "hatebr", "tweet_sentbr",
-            "oab_bench", "broverbs", "capitu", "math_pt", "lener_br",
-            "legalbench_br", "publichearing_br", "donotanswer_pt", "xlsum_pt",
-            "mmlu_en", "hellaswag_en", "arc_en",
+            "enem",
+            "bluex",
+            "assin2_rte",
+            "assin2_sts",
+            "copa_pt",
+            "boolq_pt",
+            "mrpc_pt",
+            "rte_pt",
+            "hatebr",
+            "tweet_sentbr",
+            "oab_bench",
+            "broverbs",
+            "capitu",
+            "math_pt",
+            "lener_br",
+            "legalbench_br",
+            "publichearing_br",
+            "donotanswer_pt",
+            "xlsum_pt",
+            "mmlu_en",
+            "hellaswag_en",
+            "arc_en",
         ]
         for task in expected_tasks:
             assert task in TASK_FORMATTERS, f"Faltando formatador para {task}"

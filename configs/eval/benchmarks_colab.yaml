@@ -1,0 +1,124 @@
+# =============================================================================
+# Avaliação — subconjunto rápido para Google Colab (GPU única)
+# =============================================================================
+# Diferenças em relação a configs/eval/benchmarks.yaml (suite completa):
+#   - use_vllm: false — instalar/compilar vLLM numa sessão efêmera do Colab
+#     é pesado e frágil; usamos geração via HF transformers (mais lenta por
+#     amostra, mas sem custo de setup) + logprob scoring para as tarefas de
+#     múltipla escolha (muito mais rápido que gerar texto completo).
+#   - think_modes: ["off"] apenas — Gemma 4 "thinking" dobra o custo de
+#     avaliação (off + on); comece por "off" e adicione "on" depois se
+#     tiver orçamento de tempo de sessão sobrando.
+#   - Apenas ~6 benchmarks representativos (1 por grupo principal +
+#     retenção EN), em vez dos ~20 da suite completa — pensado para caber
+#     numa única sessão de Colab junto com o treino.
+#   - models_to_evaluate aponta para o checkpoint que o notebook do Colab
+#     realmente produz (outputs/cpt_colab_pilot/final e o merge residual
+#     correspondente), não para os baselines de 4B-7B da suite completa
+#     (que não cabem/não são o objetivo de uma sessão de demonstração).
+#
+# Uso:
+#   gemma4pt eval --config configs/eval/benchmarks_colab.yaml
+
+evaluation:
+  seed: 42
+  temperature: 0.0
+  max_new_tokens: 128  # respostas de benchmark são curtas (letra/número/rótulo)
+  max_prompt_length: 2048
+  batch_size: 8
+  use_vllm: false
+  cache_dir: "outputs/eval_cache"
+  use_logprob: true
+  think_modes: ["off"]
+  strip_think_from_output: true
+  empty_think_channel: false
+
+benchmarks:
+  enem_2022:
+    task: "enem"
+    year: 2022
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "maritaca-ai/enem"
+    subset: "2022"
+    enabled: true
+
+  bluex:
+    task: "bluex"
+    group: "brasil_geral"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "eduagarcia-temp/BLUEX_without_images"
+    max_samples: 200  # amostra para caber no tempo de sessão
+    enabled: true
+
+  assin2_rte:
+    task: "assin2_rte"
+    group: "semantica"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: "nilc-nlp/assin2"
+    max_samples: 300
+    enabled: true
+
+  hatebr:
+    task: "hatebr"
+    group: "classificacao_social"
+    metric: "macro_f1"
+    num_shots: 5
+    hub_id: "ruanchaves/hatebr"
+    max_samples: 300
+    enabled: true
+
+  oab_bench:
+    task: "oab_bench"
+    group: "juridico"
+    metric: "accuracy"
+    num_shots: 0
+    hub_id: "eduagarcia/oab_exams"
+    max_samples: 200
+    enabled: true
+
+  mmlu_en_sample:
+    task: "mmlu_en"
+    group: "retencao_en"
+    metric: "accuracy"
+    num_shots: 5
+    hub_id: "cais/mmlu"
+    subset: "all"
+    max_samples: 150
+    enabled: true
+
+# =============================================================================
+# Modelos a Avaliar — o que uma sessão do Colab realmente produz
+# =============================================================================
+models_to_evaluate:
+  # Baseline instruct oficial, para comparação (mesma família/tamanho do
+  # modelo treinado — troque para -E4B-it se usou cpt_e4b em vez de e2b).
+  - id: "google/gemma-4-E2B-it"
+    name: "Gemma4-E2B-IT-baseline"
+    type: "baseline"
+    is_chat_model: true
+
+  # Checkpoint CPT puro (sem chat template — ver PromptBuilder/is_chat_model
+  # em src/eval/prompt_templates.py e src/eval/benchmark_runner.py).
+  - id: "outputs/cpt_colab_pilot/final"
+    name: "CPT-E2B-Colab-Pilot"
+    type: "cpt"
+    is_chat_model: false
+
+  # Merge residual (recupera instruction-following sem SFT — ver
+  # src/train/residual_merge.py e docs/CPT_BEST_PRACTICES_RESEARCH.md).
+  - id: "outputs/residual_merge/alpha_1.00"
+    name: "CPT+Merge-E2B-Colab"
+    type: "merge"
+    is_chat_model: true
+
+report:
+  output_dir: "reports"
+  formats: ["csv", "markdown", "json"]
+  bootstrap_n: 10000
+  confidence_level: 0.95
+  generate_plots: true
+  plot_types: ["heatmap", "bar"]

@@ -9,7 +9,7 @@ Etapas que **não podem** ser executadas sem GPU e as alternativas CPU implement
 | CPT (Continued Pretraining) | Forward/backward de modelo 4B+ | `--tiny` (10 steps), `--dry-run` (valida config) |
 | SFT (Supervised Fine-Tuning) | Idem | `--tiny`, `--dry-run` |
 | DPO/ORPO | Idem + modelo de referência | `--dry-run` |
-| Avaliação (inferência) | Geração de texto com modelo grande | Cache de resultados, mock predictions |
+| Avaliação (inferência) | Geração de texto com modelo grande | Cache de resultados (`--dry-run` valida a config sem inferência; não há um modo de "mock predictions" — a inferência real sempre requer GPU/modelo carregado) |
 | Flash Attention | Kernel CUDA específico | Fallback para attention padrão |
 | BitsAndBytes quantization | CUDA kernel | Skipped em CPU |
 
@@ -64,3 +64,8 @@ O modo `--tiny` executa a etapa real mas com recursos mínimos:
 3. Se OK: `gemma4pt train-cpt configs/train/cpt_pilot.yaml` — treino real
 4. `gemma4pt eval --model outputs/cpt_pilot/final`
 5. `gemma4pt report`
+
+**Sem GPU própria/GCP**: use o notebook `colab/Gemma4_PTBR_Colab.ipynb`, que
+roda os mesmos passos numa GPU única gratuita/paga do Google Colab
+(`configs/train/cpt_colab_pilot.yaml` + `configs/eval/benchmarks_colab.yaml`
+— ver `colab/README.md`).

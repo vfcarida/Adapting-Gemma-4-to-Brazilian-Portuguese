@@ -48,6 +48,58 @@ from src.utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
+def _load_state_dict(
+    model_path: str,
+    dtype: torch.dtype,
+    device: str,
+    base_model_id: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Load a model's state dict, transparently merging a LoRA adapter first.
+
+    `cpt_model_path` may point at either a full model checkpoint (CPT ran
+    with `use_lora: false`) or a LoRA adapter directory (CPT ran with
+    `use_lora: true`, the default in configs/train/cpt_pilot.yaml — the
+    original version of this function assumed a full checkpoint and would
+    raise trying to `AutoModelForCausalLM.from_pretrained` an adapter-only
+    directory). Adapter directories are detected via `adapter_config.json`
+    and merged onto `base_model_id` via `merge_and_unload()` before the
+    residual-merge arithmetic runs.
+
+    Args:
+        model_path: Path (or Hub ID) to load.
+        dtype: Storage dtype for the loaded model.
+        device: Device map for loading.
+        base_model_id: Base model to merge a LoRA adapter onto. Required if
+            `model_path` is a LoRA adapter directory.
+
+    Returns:
+        The (possibly LoRA-merged) model's state dict.
+    """
+    adapter_config = Path(model_path) / "adapter_config.json"
+    if adapter_config.exists():
+        if base_model_id is None:
+            raise ValueError(
+                f"{model_path} is a LoRA adapter directory but no base_model_id "
+                "was provided to merge it onto."
+            )
+        logger.info(f"{model_path} is a LoRA adapter — merging onto {base_model_id} first")
+        from peft import PeftModel
+
+        base = AutoModelForCausalLM.from_pretrained(base_model_id, dtype=dtype, device_map=device)
+        merged = PeftModel.from_pretrained(base, model_path)
+        merged = merged.merge_and_unload()
+        state = merged.state_dict()
+        del merged, base
+        gc.collect()
+        return state
+
+    model = AutoModelForCausalLM.from_pretrained(model_path, dtype=dtype, device_map=device)
+    state = model.state_dict()
+    del model
+    gc.collect()
+    return state
+
+
 def compute_residual_merge(
     base_model_id: str,
     instruct_model_id: str,
@@ -102,28 +154,15 @@ def compute_residual_merge(
     # --- Load state dicts sequentially to minimize peak memory ---
 
     logger.info("Loading base model weights...")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_id, torch_dtype=dtype, device_map=device
-    )
-    base_state = base_model.state_dict()
-    del base_model
-    gc.collect()  # Free model graph, keep only state dict
+    base_state = _load_state_dict(base_model_id, dtype, device)
 
     logger.info("Loading instruct model weights...")
-    instruct_model = AutoModelForCausalLM.from_pretrained(
-        instruct_model_id, torch_dtype=dtype, device_map=device
-    )
-    instruct_state = instruct_model.state_dict()
-    del instruct_model
-    gc.collect()
+    instruct_state = _load_state_dict(instruct_model_id, dtype, device)
 
     logger.info("Loading CPT model weights...")
-    cpt_model = AutoModelForCausalLM.from_pretrained(
-        cpt_model_path, torch_dtype=dtype, device_map=device
-    )
-    cpt_state = cpt_model.state_dict()
-    del cpt_model
-    gc.collect()
+    # Transparently merges a LoRA adapter onto base_model_id first if
+    # cpt_model_path is an adapter directory (see _load_state_dict).
+    cpt_state = _load_state_dict(cpt_model_path, dtype, device, base_model_id=base_model_id)
 
     # --- Validate parameter compatibility ---
 
@@ -151,10 +190,15 @@ def compute_residual_merge(
     merged_state = {}
     shape_mismatches = []
 
-    for key in tqdm(common_keys, desc="Merging"):
-        base_w = base_state[key]
-        instruct_w = instruct_state[key]
-        cpt_w = cpt_state[key]
+    # Pop each tensor out of its source state dict as it's consumed, instead
+    # of keeping all three source dicts fully alive for the whole loop. This
+    # keeps peak memory close to ~3x model size (three sources shrinking as
+    # `merged_state` grows) rather than ~4x (three sources held in full plus
+    # a fully-grown `merged_state` at the end of the loop).
+    for key in tqdm(list(common_keys), desc="Merging"):
+        base_w = base_state.pop(key)
+        instruct_w = instruct_state.pop(key)
+        cpt_w = cpt_state.pop(key)
 
         # Shape validation - all three must match for arithmetic
         if base_w.shape != instruct_w.shape or base_w.shape != cpt_w.shape:
@@ -178,9 +222,9 @@ def compute_residual_merge(
 
     # Include CPT-only keys (e.g., added during LoRA merge)
     for key in cpt_keys - common_keys:
-        merged_state[key] = cpt_state[key]
+        merged_state[key] = cpt_state.pop(key)
 
-    # Free source state dicts
+    # Free (now-empty) source state dicts
     del base_state, instruct_state, cpt_state
     gc.collect()
 
@@ -188,17 +232,30 @@ def compute_residual_merge(
 
     logger.info(f"Saving merged model to {output_path}")
 
-    # Load model architecture from CPT checkpoint to get correct config
-    cpt_model = AutoModelForCausalLM.from_pretrained(
-        cpt_model_path, torch_dtype=dtype, device_map=device
-    )
-    cpt_model.load_state_dict(merged_state, strict=False)
-    cpt_model.save_pretrained(output_path)
-    del cpt_model
+    # Load model architecture from the BASE model (not cpt_model_path): if
+    # CPT ran with LoRA, cpt_model_path is an adapter directory with no
+    # standalone config.json and can't be loaded via from_pretrained here.
+    # base_model_id is guaranteed to be a full model repo with the same
+    # architecture (required for the arithmetic above to be valid at all).
+    save_model = AutoModelForCausalLM.from_pretrained(base_model_id, dtype=dtype, device_map=device)
+    save_model.load_state_dict(merged_state, strict=False)
+    del merged_state  # now copied into save_model's parameters; free the dict
+    gc.collect()
+    save_model.save_pretrained(output_path)
+    del save_model
     gc.collect()
 
-    # Copy tokenizer (unchanged by merge)
-    tokenizer = AutoTokenizer.from_pretrained(cpt_model_path)
+    # Save the INSTRUCT model's tokenizer, not the CPT checkpoint's or
+    # base's. The merged model is semantically instruction-following (that's
+    # the entire point of adding the instruction residual), so it needs the
+    # tokenizer that actually carries a working `chat_template` — verified
+    # live: a Gemma 4 BASE tokenizer (google/gemma-4-E2B) has
+    # `chat_template=None`, only the `-it` tokenizer has one. CPT doesn't
+    # change vocab/add tokens in this pipeline (no vocab_expansion path is
+    # wired up — see configs/model/*.yaml's `vocab_expansion.enabled:
+    # false`), so base/instruct/CPT all share the same vocabulary and using
+    # the instruct tokenizer loses nothing.
+    tokenizer = AutoTokenizer.from_pretrained(instruct_model_id)
     tokenizer.save_pretrained(output_path)
 
     # Save metadata for reproducibility
@@ -252,9 +309,9 @@ def alpha_sweep(
     results = []
 
     for alpha in alphas:
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Alpha sweep: {alpha}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
         path = compute_residual_merge(
             base_model_id=base_model_id,
@@ -301,7 +358,9 @@ Examples:
     parser.add_argument("--instruct-model", type=str, required=True, help="Instruct model HF ID")
     parser.add_argument("--cpt-model", type=str, required=True, help="Path to CPT model")
     parser.add_argument(
-        "--alpha", type=float, nargs="+",
+        "--alpha",
+        type=float,
+        nargs="+",
         default=[0.5, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
         help="Alpha value(s) for instruction residual scaling",
     )

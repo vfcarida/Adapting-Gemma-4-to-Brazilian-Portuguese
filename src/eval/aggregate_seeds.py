@@ -14,7 +14,6 @@ from typing import Any
 
 import numpy as np
 
-from src.eval.bootstrap_ci import bootstrap_ci
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +53,9 @@ def aggregate_seed_results(
 
     for seed_result in all_results:
         # Handle both direct list format and nested format
-        results_list = seed_result if isinstance(seed_result, list) else seed_result.get("results", [])
+        results_list = (
+            seed_result if isinstance(seed_result, list) else seed_result.get("results", [])
+        )
 
         for model_result in results_list:
             model_name = model_result.get("model_name", "unknown")
@@ -83,6 +84,7 @@ def aggregate_seed_results(
             std = float(np.std(scores, ddof=1))
             # t-based CI for small n
             from scipy.stats import t as t_dist
+
             t_crit = t_dist.ppf(1 - alpha, df=n - 1)
             margin = t_crit * std / np.sqrt(n)
             ci_lower = float(np.mean(scores) - margin)
@@ -113,7 +115,7 @@ def format_aggregated_table(aggregated: dict[str, Any]) -> str:
     """
     lines = [
         f"# Aggregated Results ({aggregated['n_seeds']} seeds, "
-        f"{aggregated['confidence_level']*100:.0f}% CI)\n",
+        f"{aggregated['confidence_level'] * 100:.0f}% CI)\n",
         "| Model / Benchmark | Mean | Std | CI Lower | CI Upper |",
         "|---|---|---|---|---|",
     ]
@@ -133,11 +135,15 @@ def main():
 
     parser = argparse.ArgumentParser(description="Aggregate multi-seed evaluation results")
     parser.add_argument(
-        "--results-dir", type=str, default="reports",
+        "--results-dir",
+        type=str,
+        default="reports",
         help="Directory containing eval_results.json files",
     )
     parser.add_argument(
-        "--output-dir", type=str, default=None,
+        "--output-dir",
+        type=str,
+        default=None,
         help="Base output dir (will look for *_seed*/eval_results.json)",
     )
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 123, 456])

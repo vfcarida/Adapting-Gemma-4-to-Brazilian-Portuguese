@@ -1,6 +1,7 @@
 """XLSum-PT task."""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 

@@ -7,17 +7,20 @@
 # =============================================================================
 
 # ── Core ML ──────────────────────────────────────────────────
-torch>=2.2.0
-transformers>=4.45.0
-datasets>=3.0.0
-accelerate>=1.0.0
-peft>=0.13.0
-trl>=0.12.0
+torch>=2.6.0
+# Gemma 4 (Gemma4ForConditionalGeneration) requires transformers>=5.5.0.
+transformers>=5.5.0
+datasets>=3.0.0,<4.0.0
+accelerate>=1.2.0
+peft>=0.14.0
+trl>=1.0.0
 sentencepiece>=0.2.0
 protobuf>=4.25.0
 
 # ── Data quality ─────────────────────────────────────────────
-datasketch>=1.6.0
+# datasketch>=2.0.0 changed the default MinHash permutation scheme
+# ("affine32"); rebuild any persisted sketches/LSH indexes after upgrading.
+datasketch>=2.0.0
 xxhash>=3.4.0
 nltk>=3.8.0
 jsonlines>=4.0.0
@@ -37,17 +40,18 @@ tqdm>=4.66.0
 
 # ── Dev (also in pyproject.toml [dev]) ───────────────────────
 pytest>=8.0.0
-ruff>=0.5.0
+pytest-socket>=0.7.0
+ruff>=0.11.0
 
 # ── GPU (install separately: pip install -r requirements-gpu.txt) ──
 # See pyproject.toml [project.optional-dependencies.gpu]
-# bitsandbytes>=0.44.0
-# deepspeed>=0.14.0
-# flash-attn>=2.5.0
+# bitsandbytes>=0.45.0
+# deepspeed>=0.15.0
+# flash-attn>=2.7.0
 
 # ── Eval engine (install separately: pip install -r requirements-eval.txt) ──
 # See pyproject.toml [project.optional-dependencies.eval]
-# vllm>=0.6.0
+# vllm>=0.8.0
 # bert-score>=0.3.13
 
 # ── Monitoring (install separately or use pip install -e ".[monitoring]") ──

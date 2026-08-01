@@ -1,6 +1,7 @@
 """ASSIN2-RTE task."""
 
 from typing import Any
+
 from src.eval.tasks.base_task import BaseTask
 
 
@@ -8,7 +9,9 @@ class Assin2RTETask(BaseTask):
     """ASSIN2 Recognizing Textual Entailment."""
 
     def load_data(self, config: dict[str, Any]) -> list[dict]:
-        hub_id = config.get("hub_id", "assin2")
+        # "assin2" now resolves via a Hub redirect; use the canonical
+        # nilc-nlp/assin2 id directly to avoid the redirect/script-loading issues.
+        hub_id = config.get("hub_id", "nilc-nlp/assin2")
         data = self._load_from_hub(hub_id, split="test")
 
         examples = []
@@ -16,7 +19,9 @@ class Assin2RTETask(BaseTask):
             example = {
                 "premise": item.get("premise", item.get("sentence1", "")),
                 "hypothesis": item.get("hypothesis", item.get("sentence2", "")),
-                "label": "entailment" if item.get("entailment_judgment", 0) == 1 else "not_entailment",
+                "label": "entailment"
+                if item.get("entailment_judgment", 0) == 1
+                else "not_entailment",
             }
             examples.append(example)
         return examples
