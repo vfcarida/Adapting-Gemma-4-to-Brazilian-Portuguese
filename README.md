@@ -464,7 +464,13 @@ training:
   # Effective batch: 2 × 16 × 8192 = ~262K tokens/step
 
 lora:
-  r: 128           # Research-backed: Biderman 2024 recommends r=128+ for CPT
+  r: 128           # H7 hypothesis to test (see Scientific Objectives above),
+                   # not an established finding: Biderman et al. (2024) never
+                   # tested r=128 (only 16/64/256) and found LoRA doesn't
+                   # close the gap to full fine-tune for CPT at ANY rank they
+                   # tried, including the highest (256) — their rank/regime
+                   # recommendation actually favors higher rank for
+                   # instruction fine-tuning, not CPT
   lora_alpha: 256
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 ```
