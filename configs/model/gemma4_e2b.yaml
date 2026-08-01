@@ -29,12 +29,19 @@ model:
 
   # Gemma 4 é multimodal — congela componentes visuais para CPT/SFT text-only
   text_only_mode: true
-  freeze_vision_encoder: true
-  freeze_multi_modal_projector: true
 
 tokenizer:
+  # use_fast/padding_side documentam o que load_tokenizer() (src/utils/hf_utils.py)
+  # já hardcoda (use_fast=True, padding_side="right") — mudar aqui não tem
+  # efeito algum, o valor real vem do código, não deste YAML.
   use_fast: true
   padding_side: "right"
+  # NOTA: add_eos_token e use_apply_chat_template não são lidos em lugar
+  # nenhum — load_tokenizer() é chamado sem kwargs em todos os call sites
+  # (cpt_trainer.py, sft_trainer.py, dpo_trainer.py, cli.py), e o uso de
+  # apply_chat_template em prompt_templates.py é incondicional (não lê
+  # este toggle). Mantidos como documentação da intenção até serem
+  # conectados ou removidos.
   add_eos_token: true
   use_apply_chat_template: true
 
@@ -47,6 +54,13 @@ chat_template_fallback:
   system_prefix: "<|turn>system\n"
   system_suffix: "<turn|>\n"
   think_open: "<|think|>\n"
+  # NOTA: think_close não é lido em nenhum lugar — _format_gemma4_manual
+  # (src/eval/prompt_templates.py) só monta o PROMPT até o generation
+  # prompt (model_prefix + think_open quando think_mode=="on"); fechar o
+  # bloco de pensamento é responsabilidade do próprio modelo gerar, não
+  # do template. O parsing do output gerado (strip_thought/extract_thought,
+  # no mesmo arquivo) usa os marcadores reais via regex global, não este
+  # valor por-modelo. Mantido aqui como documentação do marcador real.
   think_close: "<channel|>\n"
 
 thinking:

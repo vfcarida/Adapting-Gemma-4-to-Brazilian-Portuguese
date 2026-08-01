@@ -49,8 +49,10 @@ class BaseTask(ABC):
         2. Padrão "A)" ou "A."
         3. Padrão "Resposta: X" / "alternativa X"
         4. Letra em parênteses "(X)"
-        5. Primeira letra isolada A-E com word boundary
-        6. Fallback: primeiro caractere
+        5. Letra isolada no início, seguida de separador (não de mais prosa)
+        6. Última letra isolada A-E em qualquer posição do texto
+        7. Fallback: primeiro caractere, só para texto curto (<=3 chars);
+           caso contrário "" (deixa o caller decidir um fallback próprio)
         """
         text = text.strip()
         if not text:
@@ -77,20 +79,44 @@ class BaseTask(ABC):
         if match:
             return match.group(1).upper()
 
-        # 5. Standalone letter at start (letter + end or letter + non-alpha)
-        match = re.match(r"^([A-Ea-e])(?:\s*$|[^a-zA-Z])", text)
+        # 5. Standalone letter at start (letter + end, or letter + an
+        # answer-like separator such as ":"/"-"/")"). Does NOT match a bare
+        # letter followed by a space and more prose (e.g. Portuguese "A
+        # resposta ...", "A alternativa ...") — that used to match here
+        # (any non-alpha, including a plain space, was accepted), which
+        # silently mis-scored any free-text response starting with the
+        # common article "a"/"A" as if it had answered "A". Prose like that
+        # now falls through to steps 6/7 below, which look for an isolated
+        # letter anywhere rather than assuming the first word is the answer.
+        match = re.match(r"^([A-Ea-e])(?:\s*$|[:\-)])", text)
         if match:
             return match.group(1).upper()
 
-        # 6. Last resort: find any isolated letter A-E
-        match = re.search(r"(?<![a-zA-Z])([A-Ea-e])(?![a-zA-Z])", text)
-        if match:
-            return match.group(1).upper()
+        # 6. Last resort: find isolated letters A-E anywhere, preferring the
+        # LAST one. Models conventionally state their final answer near the
+        # end of a reasoning chain ("... portanto, a resposta é B"), so the
+        # last isolated letter is more often the real answer than the
+        # first. A candidate at position 0 immediately followed by more
+        # lowercase prose (not punctuation/end-of-string) is excluded
+        # entirely — same rationale as step 5, it's an ordinary leading word
+        # ("A resposta...", "E" as the conjunction "and"), never a real
+        # answer token in that shape.
+        candidates = list(re.finditer(r"(?<![a-zA-Z])([A-Ea-e])(?![a-zA-Z])", text))
+        candidates = [
+            m for m in candidates if not (m.start() == 0 and re.match(r"\s[a-z]", text[m.end() :]))
+        ]
+        if candidates:
+            return candidates[-1].group(1).upper()
 
-        # 7. Final fallback
-        if text[0].upper() in "ABCDE":
+        # 7. Final fallback: only trust a bare leading character for
+        # genuinely short text (plausibly just the answer itself). For
+        # longer free text with no recognizable answer pattern, guessing
+        # the first character is usually just its first ordinary word, not
+        # an answer — return "" so callers with their own fallback (e.g.
+        # numeric extraction) get a chance instead of a wrong letter.
+        if len(text) <= 3 and text[0].upper() in "ABCDE":
             return text[0].upper()
-        return text[:1].upper()
+        return ""
 
     def _extract_number(self, text: str) -> str:
         """Extract a number from text."""

@@ -97,6 +97,14 @@ class TestResidualMergeProperties:
 
     def test_when_cpt_equals_base(self):
         """If CPT didn't change weights, merge should interpolate toward instruct."""
+        # Seeded (was previously unseeded torch.randn): with the default
+        # torch.allclose tolerances (rtol=1e-5, atol=1e-8), the float32
+        # rounding error of `base + (instruct - base)` vs. `instruct` exceeds
+        # tolerance for ~2% of random draws, causing CI flakiness unrelated
+        # to any merge-logic defect. Seeding pins this to always-passing
+        # inputs; atol=1e-6 (same precedent as test_full_residual above)
+        # covers the float32 rounding error regardless.
+        torch.manual_seed(0)
         base = torch.randn(5, 5)
         instruct = torch.randn(5, 5)
         cpt = base.clone()  # No CPT change
@@ -104,4 +112,4 @@ class TestResidualMergeProperties:
 
         merged = cpt + alpha * (instruct - base)
         # Should equal instruct since cpt=base
-        assert torch.allclose(merged, instruct)
+        assert torch.allclose(merged, instruct, atol=1e-6)

@@ -71,10 +71,18 @@ class ReportBuilder:
         output_dir: Output path (created if needed).
     """
 
-    def __init__(self, results: list[dict], output_dir: str | Path = "reports"):
+    def __init__(
+        self,
+        results: list[dict],
+        output_dir: str | Path = "reports",
+        generate_plots: bool = True,
+    ):
         self.results = results
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # configs/eval/benchmarks.yaml's report.generate_plots (previously
+        # read nowhere — plots were always built regardless of the flag).
+        self.generate_plots = generate_plots
 
     def build_all(self) -> None:
         """Generate all report artifacts in sequence.
@@ -86,7 +94,8 @@ class ReportBuilder:
         self.build_group_averages()
         self.build_comparison_csv()
         self.build_summary_md()
-        self.build_plots()
+        if self.generate_plots:
+            self.build_plots()
         logger.info(f"Reports generated in {self.output_dir}")
 
     def build_main_table(self) -> pd.DataFrame:

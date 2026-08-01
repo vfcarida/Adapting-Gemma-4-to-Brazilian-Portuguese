@@ -5,10 +5,12 @@
 #   - Usa Gemma 4 E2B (~2.3B efetivos) em vez de E4B — cabe com folga em
 #     QLoRA numa única GPU de Colab, inclusive o T4 16GB gratuito.
 #   - max_seq_length=2048 (não 8192) — reduz VRAM e tempo por step.
-#   - learning_rate mais baixo (2e-5, não 2e-4): para CPT (não instruction
-#     tuning), a literatura recomenda LR de LoRA ~1e-5 a 5e-5, não a regra
-#     "10x maior que full fine-tune" que vale para IFT. Ver
-#     docs/CPT_BEST_PRACTICES_RESEARCH.md (Biderman et al. 2024).
+#   - learning_rate igual ao mesmo patamar de cpt_pilot.yaml (1e-4, não 2e-4):
+#     docs/CPT_BEST_PRACTICES_RESEARCH.md §1.3 recomenda 1e-4 a 3e-4 para
+#     LoRA/QLoRA especificamente (só os adapters são atualizados, não a rede
+#     inteira — a regra de LR baixo vale para full fine-tune, não para
+#     adapters). Levemente mais baixo que os 2e-4 de cpt_pilot.yaml porque
+#     aqui r=64 (vs r=128) e QLoRA introduz ruído extra de quantização.
 #   - max_steps curto (300) — um piloto de demonstração que cabe numa única
 #     sessão do Colab (T4 free: ~algumas horas; A100: mais rápido ainda).
 #     Para uma run "de verdade" (orçamento de tokens maior), aumente
@@ -44,7 +46,7 @@ training:
   gradient_accumulation_steps: 8
   # Batch efetivo: 4 * 8 * 2048 ~= 65K tokens/step
 
-  learning_rate: 2.0e-5
+  learning_rate: 1.0e-4
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.03
   weight_decay: 0.01

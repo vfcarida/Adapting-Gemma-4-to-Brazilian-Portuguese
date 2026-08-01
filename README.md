@@ -480,7 +480,7 @@ lora:
 
 ### 20+ Benchmarks Across 7 Groups
 
-Every `hub_id` below is a **real, verified** HuggingFace dataset (verified live against the Hub — see `configs/eval/benchmarks.yaml` for exact IDs, splits, and the license/gating notes). `capitu`, `math_pt`, and `donotanswer_pt` are disabled by default (no verified public dataset exists yet — see the comments in that file for the closest alternatives).
+Every `hub_id` below is a **real, verified** HuggingFace dataset (verified live against the Hub — see `configs/eval/benchmarks.yaml` for exact IDs, splits, and the license/gating notes). `capitu` and `donotanswer_pt` are disabled by default (no verified public dataset exists yet — see the comments in that file for the closest alternatives). `math_pt` is enabled, backed by `tiagoteixeira03/MATH-PT` (`ptbr_multiple_choice` config).
 
 | Group | Benchmarks | What it measures |
 |-------|-----------|-----------------|
@@ -488,6 +488,7 @@ Every `hub_id` below is a **real, verified** HuggingFace dataset (verified live 
 | **Semântica** | ASSIN2-RTE/STS (`nilc-nlp/assin2`), CoPA-PT/BoolQ-PT/MRPC-PT/RTE-PT (`PORTULAN/extraglue`) | Language understanding |
 | **Classificação** | HateBR (`ruanchaves/hatebr`), TweetSentBR (`eduagarcia/tweetsentbr_fewshot`) | Text classification |
 | **Jurídico** | OAB-Bench (`eduagarcia/oab_exams`), LeNER-Br (`peluz/lener_br`), LegalBench-BR (`eduagarcia/portuguese_benchmark:brazilian_court_decisions_judgment`) | Legal domain |
+| **Raciocínio** | Math-PT (`tiagoteixeira03/MATH-PT`) | Math word problems |
 | **Cultura** | BRoverbs (`Tropic-AI/BRoverbs`) | Brazilian cultural knowledge |
 | **Domínio Público** | PublicHearing-BR (`unicamp-dl/PublicHearingBR`) | Public-hearing summarization |
 | **Retenção EN** | MMLU (`cais/mmlu`), HellaSwag (`Rowan/hellaswag`), ARC (`allenai/ai2_arc`) | English capability retention |
@@ -586,7 +587,7 @@ This project's methodology is informed by recent research:
 
 | Paper | Key Insight Applied |
 |-------|-------------------|
-| Biderman et al. (2024) "LoRA Learns Less and Forgets Less" | For CPT specifically, LoRA LR should be ~1e-5 to 5e-5 (not the 10x-higher rule that applies to instruction tuning); full fine-tune generally learns more than even high-rank LoRA at CPT scale |
+| Biderman et al. (2024) "LoRA Learns Less and Forgets Less" | LoRA needs an LR an order of magnitude above full fine-tune's (~5e-5 to 5e-4) to converge — this holds for both CPT and instruction-tuning regimes the paper tests, not just one; full fine-tune generally learns more than even high-rank LoRA at CPT scale |
 | Ibrahim et al. (2024) "Simple Strategies for CPT" | ~5% replay for a same-domain shift, ~25% for a new-language shift (English→German in their study, the closest analog to English→Portuguese here) |
 | Sabiá (Maritaca, 2023) | ~10B PT tokens CPT on LLaMA → large ENEM/Poeta gains at small English cost |
 | Tucano (PUCRS, 2024) | Most PT benchmarks don't scale monotonically with CPT tokens — only CALAME-PT/LAMBADA-PT/ARC-PT/HellaSwag-PT reliably do; use those as in-training progress signals |

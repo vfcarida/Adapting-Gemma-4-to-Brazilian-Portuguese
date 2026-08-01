@@ -209,7 +209,8 @@ class SFTTrainerWrapper:
         instruction_dataset = data_builder.load_datasets()
 
         # Format conversations using Gemma 4 chat template
-        # use_think=True wraps model responses in <think>...</think> tags
+        # use_think=True delimits reasoning with <|channel>thought...<channel|>
+        # (Gemma 4's real markers — see GEMMA4_COMPLIANCE.md), not <think>...</think>
         use_think = self.sft_cfg.get("use_think_tokens", False)
 
         def formatting_func(example):

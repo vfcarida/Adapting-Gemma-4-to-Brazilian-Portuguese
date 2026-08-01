@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.config_utils import load_config
+from src.utils.hashing import deterministic_split_value
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -135,17 +136,16 @@ def make_splits(config: dict[str, Any], output_dir: str = "outputs/data_splits")
     else:
         logger.info("Passo 3/5: Dedup por cluster desabilitado, usando hash split...")
         logger.info("Passo 4/5: Split por hash de documento...")
-        # Fallback: split por hash individual
-        import hashlib
-
+        # Fallback: split por hash individual (mesmo hash de
+        # AuroraLoader.split_train_val, via deterministic_split_value, para
+        # que o mesmo documento caia no mesmo split nos dois caminhos)
         val_ratio = dataset_cfg.get("val_ratio", 0.005)
 
         train_indices = []
         val_indices = []
         for i in filtered_indices:
             text = raw_dataset[i]["text"]
-            h = hashlib.md5(text[:500].encode()).hexdigest()
-            hash_val = int(h, 16) / (16**32)
+            hash_val = deterministic_split_value(text)
             if hash_val < val_ratio:
                 val_indices.append(i)
             else:

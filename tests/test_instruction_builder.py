@@ -1,46 +1,20 @@
 """Tests for instruction data builder and chat template formatting.
 
-Note: These tests import only the pure-Python formatting functions,
-not the dataset loading code (which requires the `datasets` library).
+Imports the real `format_gemma4_chat` and `InstructionDataBuilder._mask_prompt_tokens`
+from src/data/instruction_data_builder.py rather than reimplementing them, so these
+tests actually exercise production code (see tests/test_data_pipeline_fixes.py for the
+prior fix that established this pattern — this file previously tested a fabricated
+Gemma 2/3-style stand-in and gave zero regression protection for the real template).
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# Import only constants and pure functions that don't trigger heavy deps
-# The format_gemma4_chat function is defined before the class that uses `datasets`
-# We re-implement the key logic here for testing without the import chain.
-
-# Gemma 4 chat template constants (duplicated for test isolation)
-GEMMA4_USER_PREFIX = "<start_of_turn>user\n"
-GEMMA4_USER_SUFFIX = "<end_of_turn>\n"
-GEMMA4_MODEL_PREFIX = "<start_of_turn>model\n"
-GEMMA4_MODEL_SUFFIX = "<end_of_turn>\n"
-
-
-def format_gemma4_chat(messages, add_generation_prompt=False, use_think=False):
-    """Local copy of format function for testing without datasets dep."""
-    formatted = "<bos>"
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "user":
-            formatted += f"{GEMMA4_USER_PREFIX}{content}{GEMMA4_USER_SUFFIX}"
-        elif role in ("model", "assistant"):
-            if use_think:
-                formatted += (
-                    f"{GEMMA4_MODEL_PREFIX}<think>\n{content}\n</think>\n{GEMMA4_MODEL_SUFFIX}"
-                )
-            else:
-                formatted += f"{GEMMA4_MODEL_PREFIX}{content}{GEMMA4_MODEL_SUFFIX}"
-    if add_generation_prompt:
-        if use_think:
-            formatted += f"{GEMMA4_MODEL_PREFIX}<think>\n"
-        else:
-            formatted += GEMMA4_MODEL_PREFIX
-    return formatted
+from src.data.instruction_data_builder import (
+    GEMMA4_MODEL_PREFIX,
+    GEMMA4_MODEL_SUFFIX,
+    GEMMA4_USER_PREFIX,
+    GEMMA4_USER_SUFFIX,
+    InstructionDataBuilder,
+    format_gemma4_chat,
+)
 
 
 class TestFormatGemma4Chat:
@@ -52,9 +26,8 @@ class TestFormatGemma4Chat:
             {"role": "model", "content": "Hi there!"},
         ]
         result = format_gemma4_chat(messages)
-        assert result.startswith("<bos>")
-        assert "<start_of_turn>user\nHello<end_of_turn>" in result
-        assert "<start_of_turn>model\nHi there!<end_of_turn>" in result
+        assert "<|turn>user\nHello<turn|>" in result
+        assert "<|turn>model\nHi there!<turn|>" in result
 
     def test_multi_turn(self):
         messages = [
@@ -64,20 +37,20 @@ class TestFormatGemma4Chat:
             {"role": "model", "content": "6"},
         ]
         result = format_gemma4_chat(messages)
-        assert result.count("<start_of_turn>user") == 2
-        assert result.count("<start_of_turn>model") == 2
-        assert result.count("<end_of_turn>") == 4
+        assert result.count("<|turn>user") == 2
+        assert result.count("<|turn>model") == 2
+        assert result.count("<turn|>") == 4
 
     def test_generation_prompt_no_think(self):
         messages = [{"role": "user", "content": "Hello"}]
         result = format_gemma4_chat(messages, add_generation_prompt=True)
-        assert result.endswith("<start_of_turn>model\n")
-        assert "<think>" not in result
+        assert result.endswith("<|turn>model\n")
+        assert "<|channel>thought" not in result
 
     def test_generation_prompt_with_think(self):
         messages = [{"role": "user", "content": "Hello"}]
         result = format_gemma4_chat(messages, add_generation_prompt=True, use_think=True)
-        assert result.endswith("<start_of_turn>model\n<think>\n")
+        assert result.endswith("<|turn>model\n<|channel>thought\n")
 
     def test_think_mode_wraps_response(self):
         messages = [
@@ -85,7 +58,7 @@ class TestFormatGemma4Chat:
             {"role": "model", "content": "thinking... answer"},
         ]
         result = format_gemma4_chat(messages, use_think=True)
-        assert "<think>\nthinking... answer\n</think>" in result
+        assert "<|channel>thought\nthinking... answer\n<channel|>" in result
 
     def test_assistant_role_accepted(self):
         messages = [
@@ -93,16 +66,18 @@ class TestFormatGemma4Chat:
             {"role": "assistant", "content": "Hello"},
         ]
         result = format_gemma4_chat(messages)
-        assert "<start_of_turn>model\nHello<end_of_turn>" in result
+        assert "<|turn>model\nHello<turn|>" in result
 
-    def test_bos_always_first(self):
-        messages = [{"role": "user", "content": "test"}]
-        result = format_gemma4_chat(messages)
-        assert result[0:5] == "<bos>"
+    def test_no_duplicate_bos(self):
+        """format_gemma4_chat must NOT prepend a literal BOS string — the
+        tokenizer adds it via add_special_tokens=True. A literal "<bos>"
+        here would double it up at encode time."""
+        result = format_gemma4_chat([{"role": "user", "content": "test"}])
+        assert "<bos>" not in result
 
     def test_empty_messages(self):
         result = format_gemma4_chat([])
-        assert result == "<bos>"
+        assert result == ""
 
     def test_preserves_special_chars_in_content(self):
         messages = [
@@ -114,33 +89,32 @@ class TestFormatGemma4Chat:
         assert "```python" in result
 
     def test_no_previous_think_in_multiturn(self):
-        """Multi-turn with think should not leak previous thinking."""
+        """Generation-prompt suffix starts a fresh, unclosed thought block —
+        it must not include or leak any earlier turn's content."""
         messages = [
             {"role": "user", "content": "Q1"},
             {"role": "model", "content": "A1"},
             {"role": "user", "content": "Q2"},
         ]
         result = format_gemma4_chat(messages, add_generation_prompt=True, use_think=True)
-        # First response should NOT have think tags (only the prompt for generation does)
-        # Actually with use_think=True in format, all model responses get think wrapping
-        # But the key point: the generation prompt at the end starts fresh
-        assert result.endswith("<start_of_turn>model\n<think>\n")
+        assert result.endswith("<|turn>model\n<|channel>thought\n")
 
 
 class TestChatTemplateConstants:
-    """Test that template constants are correct."""
+    """Test that template constants are correct (Gemma 4's dedicated special
+    tokens, NOT Gemma 2/3's <start_of_turn>/<end_of_turn> plain-text markers)."""
 
     def test_user_prefix(self):
-        assert GEMMA4_USER_PREFIX == "<start_of_turn>user\n"
+        assert GEMMA4_USER_PREFIX == "<|turn>user\n"
 
     def test_user_suffix(self):
-        assert GEMMA4_USER_SUFFIX == "<end_of_turn>\n"
+        assert GEMMA4_USER_SUFFIX == "<turn|>\n"
 
     def test_model_prefix(self):
-        assert GEMMA4_MODEL_PREFIX == "<start_of_turn>model\n"
+        assert GEMMA4_MODEL_PREFIX == "<|turn>model\n"
 
     def test_model_suffix(self):
-        assert GEMMA4_MODEL_SUFFIX == "<end_of_turn>\n"
+        assert GEMMA4_MODEL_SUFFIX == "<turn|>\n"
 
     def test_no_trailing_spaces(self):
         for token in [
@@ -152,43 +126,54 @@ class TestChatTemplateConstants:
             assert not token.endswith(" ")
 
 
-class TestMaskingLogic:
-    """Test the label masking logic for train-on-completions-only."""
+class TestMaskPromptTokens:
+    """Test InstructionDataBuilder._mask_prompt_tokens — the real completions-
+    only label-masking logic (used by cpt/sft training, not a reimplementation).
+    The method doesn't touch `self`, so it can be called unbound on `None`.
+    """
 
-    def test_find_response_template(self):
-        """Verify response template matching logic."""
-        # Simulated token IDs
-        response_template_ids = [100, 200, 300]  # "<start_of_turn>model\n"
-        input_ids = [1, 2, 3, 100, 200, 300, 4, 5, 6]
-
-        # Find template position
-        template_len = len(response_template_ids)
-        found_positions = []
-        for i in range(len(input_ids) - template_len + 1):
-            if input_ids[i : i + template_len] == response_template_ids:
-                found_positions.append(i + template_len)
-
-        assert len(found_positions) == 1
-        assert found_positions[0] == 6  # Position after template
+    def _mask(self, input_ids, response_template_ids, turn_start_ids=None):
+        labels = list(input_ids)
+        return InstructionDataBuilder._mask_prompt_tokens(
+            None, input_ids, labels, response_template_ids, turn_start_ids
+        )
 
     def test_mask_prompt_tokens(self):
-        """Test that prompt tokens get masked to -100."""
-        IGNORE_INDEX = -100
         input_ids = [1, 2, 3, 100, 200, 300, 4, 5, 6]
         response_template_ids = [100, 200, 300]
 
-        # Apply masking logic
-        masked_labels = [IGNORE_INDEX] * len(input_ids)
-        template_len = len(response_template_ids)
+        masked_labels = self._mask(input_ids, response_template_ids)
 
-        for i in range(len(input_ids) - template_len + 1):
-            if input_ids[i : i + template_len] == response_template_ids:
-                start = i + template_len
-                for j in range(start, len(input_ids)):
-                    masked_labels[j] = input_ids[j]
-                break
-
-        # Prompt tokens should be masked
-        assert masked_labels[:6] == [IGNORE_INDEX] * 6
-        # Response tokens should be unmasked
+        assert masked_labels[:6] == [-100] * 6
         assert masked_labels[6:] == [4, 5, 6]
+
+    def test_multi_turn_unmask_stops_at_next_turn(self):
+        """A multi-turn sequence must not leak the following user turn into
+        the unmasked (trained-on) region for an earlier model response."""
+        turn_start_ids = [9]
+        response_template_ids = [9, 100]  # "<|turn>" + "model"
+        # turn: <|turn>model A1 <|turn>user Q2 <|turn>model A2
+        input_ids = [9, 100, 11, 9, 200, 12, 9, 100, 13]
+        labels = list(input_ids)
+
+        masked = InstructionDataBuilder._mask_prompt_tokens(
+            None, input_ids, labels, response_template_ids, turn_start_ids
+        )
+
+        # First model response (index 2) unmasked, stops before the next <|turn> at index 3
+        assert masked[2] == 11
+        assert masked[3] == -100  # next turn's <|turn> marker stays masked
+        assert masked[4] == -100  # "user" role token, masked
+        # Second model response (index 8) unmasked, runs to end of sequence
+        assert masked[8] == 13
+
+    def test_missing_template_falls_back_to_unmasked(self):
+        """If the response template never appears, masking is skipped
+        entirely (logged as a warning) rather than silently training on
+        garbage positions."""
+        input_ids = [1, 2, 3, 4, 5]
+        response_template_ids = [999]
+
+        masked = self._mask(input_ids, response_template_ids)
+
+        assert masked == input_ids

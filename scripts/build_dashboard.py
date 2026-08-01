@@ -44,16 +44,18 @@ def flatten_results(results: list[dict]) -> list[dict]:
                 metrics = bench_result.get("metrics", {})
                 primary_metric = bench_result.get("metric_name", "accuracy")
                 score = metrics.get(primary_metric, 0)
-                rows.append({
-                    "model": model_name,
-                    "think_mode": mode_key.replace("think_", ""),
-                    "benchmark": bench_name,
-                    "group": bench_result.get("group", "other"),
-                    "metric": primary_metric,
-                    "score": score,
-                    "n_examples": bench_result.get("num_examples", 0),
-                    "inference_time": bench_result.get("inference_time_sec", 0),
-                })
+                rows.append(
+                    {
+                        "model": model_name,
+                        "think_mode": mode_key.replace("think_", ""),
+                        "benchmark": bench_name,
+                        "group": bench_result.get("group", "other"),
+                        "metric": primary_metric,
+                        "score": score,
+                        "n_examples": bench_result.get("num_examples", 0),
+                        "inference_time": bench_result.get("inference_time_sec", 0),
+                    }
+                )
     return rows
 
 
@@ -78,9 +80,7 @@ def build_comparison_table(rows: list[dict], group_filter: str | None = None) ->
     # Find best per benchmark (for highlighting)
     best_per_bench = {}
     for bench in benchmarks:
-        bench_scores = [
-            (m, scores.get((m, bench, "off"), 0)) for m in models
-        ]
+        bench_scores = [(m, scores.get((m, bench, "off"), 0)) for m in models]
         if bench_scores:
             best_model = max(bench_scores, key=lambda x: x[1])
             best_per_bench[bench] = best_model[0]
@@ -119,9 +119,7 @@ def build_comparison_table(rows: list[dict], group_filter: str | None = None) ->
     lines.append("\n## Winners per Benchmark\n")
     for bench in benchmarks:
         winner = best_per_bench.get(bench, "—")
-        best_score = max(
-            (scores.get((m, bench, "off"), 0) for m in models), default=0
-        )
+        best_score = max((scores.get((m, bench, "off"), 0) for m in models), default=0)
         lines.append(f"- **{bench}**: {winner} ({best_score:.3f})")
 
     # Group averages
@@ -134,11 +132,12 @@ def build_comparison_table(rows: list[dict], group_filter: str | None = None) ->
             cells = [f"**{model}**"]
             for group in groups:
                 group_scores = [
-                    r["score"] for r in rows
+                    r["score"]
+                    for r in rows
                     if r["model"] == model and r["group"] == group and r["think_mode"] == "off"
                 ]
                 if group_scores:
-                    cells.append(f"{sum(group_scores)/len(group_scores):.3f}")
+                    cells.append(f"{sum(group_scores) / len(group_scores):.3f}")
                 else:
                     cells.append("—")
             lines.append("| " + " | ".join(cells) + " |")
@@ -170,11 +169,12 @@ def build_terminal_output(rows: list[dict], group_filter: str | None = None) -> 
 
     # Compact table
     max_model_len = max(len(m) for m in models)
-    max_bench_len = max(len(b) for b in benchmarks)
 
-    header = f"{'Model':<{max_model_len}} | " + " | ".join(
-        f"{b[:8]:>8}" for b in benchmarks
-    ) + f" | {'Avg':>6}"
+    header = (
+        f"{'Model':<{max_model_len}} | "
+        + " | ".join(f"{b[:8]:>8}" for b in benchmarks)
+        + f" | {'Avg':>6}"
+    )
     lines.append(header)
     lines.append("─" * len(header))
 
@@ -210,13 +210,14 @@ def build_terminal_output(rows: list[dict], group_filter: str | None = None) -> 
 def main():
     parser = argparse.ArgumentParser(description="Build results dashboard")
     parser.add_argument(
-        "--input", type=str, default="reports/eval_results.json",
-        help="Path to eval_results.json"
+        "--input", type=str, default="reports/eval_results.json", help="Path to eval_results.json"
     )
     parser.add_argument(
-        "--format", type=str, default="terminal",
+        "--format",
+        type=str,
+        default="terminal",
         choices=["terminal", "markdown", "csv"],
-        help="Output format"
+        help="Output format",
     )
     parser.add_argument("--group", type=str, default=None, help="Filter by benchmark group")
     parser.add_argument("--output-dir", type=str, default="reports", help="Output directory")
@@ -245,6 +246,7 @@ def main():
         output_path = output_dir / "dashboard.csv"
         # Write flat CSV
         import csv
+
         with open(output_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
             writer.writeheader()

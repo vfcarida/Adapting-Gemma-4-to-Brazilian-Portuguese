@@ -240,9 +240,12 @@ benchmarks:
     group: "raciocinio"
     metric: "accuracy"
     num_shots: 0
-    # Se7enB/math_pt was fabricated, and no verified Brazilian-Portuguese
-    # math benchmark was found on the Hub. Disabled by default.
-    enabled: false
+    # Se7enB/math_pt was fabricated. Replaced with tiagoteixeira03/MATH-PT
+    # (arXiv:2604.25926; verified public, ungated, on the Hub 2026-08-01),
+    # config "ptbr_multiple_choice" (638 BR-sourced problems, e.g. OBMEP/ITA).
+    hub_id: "tiagoteixeira03/MATH-PT"
+    subset: "ptbr_multiple_choice"
+    enabled: true
 
   # =========================================================================
   # GRUPO: Audiências Públicas / Domínio Público
@@ -288,21 +291,10 @@ benchmarks:
     secondary_metric: "bert_score"
     enabled: true
 
-  alba:
-    task: "alba"
-    group: "exploratorio"
-    metric: "accuracy"
-    num_shots: 5
-    hub_id: "Se7enB/alba"
-    enabled: false
-
-  mariner:
-    task: "mariner"
-    group: "exploratorio"
-    metric: "entity_micro_f1"
-    num_shots: 0
-    hub_id: "Se7enB/mariner_pt"
-    enabled: false
+  # NOTA: entradas "alba" e "mariner" foram removidas — apontavam para
+  # hub_id fabricado (Se7enB/alba, Se7enB/mariner_pt) e não têm task
+  # correspondente em TASK_REGISTRY (src/eval/tasks/__init__.py). Nenhum
+  # dataset público real foi localizado para nenhum dos dois.
 
   # =========================================================================
   # GRUPO: Retenção em Inglês (verifica catastrophic forgetting)
@@ -400,10 +392,19 @@ models_to_evaluate:
 report:
   output_dir: "reports"
   formats: ["csv", "markdown", "json"]
-  # src/eval/bootstrap_ci.py now defaults to 10000 resamples (percentile/BCa
+  # src/eval/bootstrap_ci.py's own default is 10000 resamples (percentile/BCa
   # interval endpoints need many more resamples than a standard-error
-  # estimate does — see that module's docstring); kept in sync here.
-  bootstrap_n: 10000
+  # estimate does — see that module's docstring), but BenchmarkRunner reads
+  # this value (see src/eval/benchmark_runner.py's __init__) and passes it
+  # per-benchmark, inline, during the eval run itself — 2000 is a deliberate
+  # speed/precision tradeoff for that inline cost; raise it for a final
+  # paper-quality run if the extra time is acceptable.
+  bootstrap_n: 2000
   confidence_level: 0.95
   generate_plots: true
-  plot_types: ["heatmap", "radar", "bar", "scaling_curves", "retention_plot"]
+  # NOTA: build_plots() (src/eval/report_builder.py) sempre gera exatamente
+  # estes 3 tipos hoje; não lê esta lista como filtro. "scaling_curves" e
+  # "retention_plot" eram aspiracionais (citados em docs/EXPERIMENT_PLAN.md)
+  # e nunca foram implementados — removidos daqui para não implicar mais do
+  # que o código realmente faz.
+  plot_types: ["heatmap", "radar", "bar"]

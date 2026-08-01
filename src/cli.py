@@ -82,8 +82,15 @@ def data_validate(
 
     if dry_run:
         typer.echo("[dry-run] Verificação estrutural apenas")
-        typer.echo(f"  Corpus: {cfg.get('corpus', {}).get('name', 'N/A')}")
-        typer.echo(f"  Splits configurados: {list(cfg.get('splits', {}).keys())}")
+        dataset_cfg = cfg.get("dataset", {})
+        typer.echo(
+            f"  Corpus: {dataset_cfg.get('name', 'N/A')} ({dataset_cfg.get('hub_id', 'N/A')})"
+        )
+        typer.echo(
+            f"  Split strategy: {dataset_cfg.get('split_strategy', 'N/A')} "
+            f"(val_ratio={dataset_cfg.get('val_ratio', 'N/A')}, "
+            f"test_ratio={dataset_cfg.get('test_ratio', 'N/A')})"
+        )
         typer.echo("[dry-run] OK — estrutura válida")
         return
 
@@ -410,9 +417,13 @@ def evaluate(
 @app.command()
 def report(
     results_dir: str = typer.Option("reports", help="Diretório de resultados"),
+    config: str = typer.Option(
+        "configs/eval/benchmarks.yaml", help="Config de avaliação (lê report.generate_plots)"
+    ),
 ):
     """Gera relatórios de avaliação (CSV, Markdown, figuras)."""
     from src.eval.report_builder import ReportBuilder, build_findings_for_paper
+    from src.utils.config_utils import load_config
 
     results_path = Path(results_dir) / "eval_results.json"
     if not results_path.exists():
@@ -422,7 +433,12 @@ def report(
 
     with open(results_path) as f:
         results = json.load(f)
-    builder = ReportBuilder(results, output_dir=results_dir)
+    report_cfg = load_config(config).get("report", {})
+    builder = ReportBuilder(
+        results,
+        output_dir=results_dir,
+        generate_plots=report_cfg.get("generate_plots", True),
+    )
     builder.build_all()
     build_findings_for_paper(results_dir)
     typer.echo(f"Relatórios gerados em {results_dir}/")

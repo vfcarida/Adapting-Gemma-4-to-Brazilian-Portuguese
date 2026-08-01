@@ -176,8 +176,14 @@ def _freeze_multimodal_modules(model):
 # configs/model/gemma4_e4b.yaml
 model:
   text_only_mode: true
-  freeze_vision_encoder: true
 ```
+
+`text_only_mode: true` alone triggers `_freeze_multimodal_modules` (`src/utils/hf_utils.py`),
+which freezes all vision/multimodal parameters by name pattern (`vision_tower`,
+`multi_modal_projector`, etc. — see the function for the full list). There are no separate
+`freeze_vision_encoder` / `freeze_multi_modal_projector` toggles — earlier drafts of these
+configs implied they existed, but neither was ever read by any code path; both have been
+removed.
 
 ## Diferenciação de caminhos
 

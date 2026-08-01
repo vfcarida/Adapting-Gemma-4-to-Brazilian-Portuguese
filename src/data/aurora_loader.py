@@ -13,12 +13,12 @@ Key design decisions:
 - Optional curriculum sorting (shorter/cleaner docs first)
 """
 
-import hashlib
 import re
 from typing import Any
 
 from datasets import Dataset, load_dataset
 
+from src.utils.hashing import deterministic_split_value
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 class AuroraLoader:
     """Load and preprocess Aurora-PT corpus for continued pretraining.
 
-    The Aurora-PT corpus (dominguesm/aurora-pt) is a large-scale Brazilian
+    The Aurora-PT corpus (Itau-Unibanco/Aurora-PT) is a large-scale Brazilian
     Portuguese text collection. This loader applies quality filters and
     creates a deterministic train/validation split.
 
@@ -134,11 +134,9 @@ class AuroraLoader:
         """
 
         def assign_split(example, idx):
-            # Hash first 500 chars for deterministic assignment
-            # MD5 is fine here (not security-critical, just uniform distribution)
-            doc_hash = hashlib.md5(example["text"][:500].encode()).hexdigest()
-            # Convert first 8 hex digits to float in [0, 1]
-            hash_val = int(doc_hash[:8], 16) / 0xFFFFFFFF
+            # Shared with make_splits.py's hash-split fallback so the same
+            # document lands in the same split under either code path.
+            hash_val = deterministic_split_value(example["text"])
             example["_split"] = "val" if hash_val < self.val_ratio else "train"
             return example
 

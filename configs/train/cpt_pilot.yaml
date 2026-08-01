@@ -55,6 +55,11 @@ lora:
   bias: "none"
   # Para DoRA, adicionar: use_dora: true
 
+packing:
+  enabled: true
+  eos_separator: true
+  mask_cross_doc_labels: true
+
 checkpointing:
   save_steps: 200  # More frequent for GCP Spot VM safety (~20 min intervals)
   save_total_limit: 5

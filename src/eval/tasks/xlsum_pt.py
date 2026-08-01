@@ -12,7 +12,19 @@ class XLSumPTTask(BaseTask):
         hub_id = config.get("hub_id", "csebuetnlp/xlsum")
         subset = config.get("subset", "portuguese")
 
-        data = self._load_from_hub(hub_id, subset=subset)
+        # csebuetnlp/xlsum relies on a legacy loading script ("Dataset
+        # scripts are no longer supported" on datasets>=3.0); pin to the
+        # Hub's auto-converted Parquet mirror instead, same underlying issue
+        # as hatebr.py/lener_br.py. Unlike those, the mirror doesn't expose
+        # "portuguese" as a builder config (only "default") — verified live
+        # that the language split lives at a fixed per-language file path
+        # instead, so it must be loaded via data_files, not subset=.
+        data = self._load_from_hub(
+            hub_id,
+            split="test",
+            revision="refs/convert/parquet",
+            data_files={"test": f"{subset}/test/0000.parquet"},
+        )
 
         examples = []
         for item in data[:500]:  # Limit for evaluation

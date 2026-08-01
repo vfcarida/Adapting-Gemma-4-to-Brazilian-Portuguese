@@ -15,13 +15,20 @@ from src.eval.tasks import load_task
 from src.utils.config_utils import load_config
 
 # Load training data sample
+# Aurora-PT has ~265M docs; a fixed prefix of the stream is a biased sample
+# (shard/crawl ordering correlates with source/domain). Shuffle within a
+# buffer window instead, so this is a seeded-random sample of the corpus
+# rather than always the same first N documents from one shard.
 print('Loading Aurora-PT sample for contamination check...')
 data_config = load_config('configs/data/aurora_pt.yaml')
 loader = AuroraLoader(data_config)
 ds = loader.load_raw(streaming=True)
+seed = data_config.get('dataset', {}).get('seed', 42)
+ds = ds.shuffle(seed=seed, buffer_size=200_000)
+SAMPLE_SIZE = 200_000  # ~0.08% of the corpus, 4x the previous fixed-prefix sample
 train_texts = []
 for i, example in enumerate(ds):
-    if i >= 50000:  # Check first 50K documents
+    if i >= SAMPLE_SIZE:
         break
     train_texts.append(example['text'])
 

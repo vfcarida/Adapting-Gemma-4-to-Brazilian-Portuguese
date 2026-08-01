@@ -60,11 +60,6 @@ sft:
   format: "gemma4"
   system_message: null  # Gemma 4 does not use system messages
 
-data_mix:
-  pt_ratio: 0.8
-  en_ratio: 0.2
-  include_translation_pairs: true
-
 checkpointing:
   save_steps: 200
   save_total_limit: 5

@@ -46,6 +46,12 @@ per entry and any split/gating notes.
 | BRoverbs | Proverb completion (5 options) | Accuracy | `Tropic-AI/BRoverbs` |
 | CAPITU | Brazilian literature comprehension | Accuracy | **Disabled by default** — no public HF dataset exists yet (paper: arXiv:2603.22576); see `src/eval/tasks/capitu.py` for how to plug in a local JSONL if you obtain the data |
 
+### Raciocinio (Math)
+
+| Benchmark | Type | Metric | Source |
+|-----------|------|--------|--------|
+| Math-PT | Math word problems (5 options) | Accuracy | `tiagoteixeira03/MATH-PT` (`ptbr_multiple_choice`; arXiv:2604.25926) |
+
 ### Dominio Publico
 
 | Benchmark | Type | Metric | Source |
@@ -72,10 +78,9 @@ per entry and any split/gating notes.
 |-----------|------|--------|--------|
 | XL-Sum-PT | Summarization | ROUGE-L | `csebuetnlp/xlsum` (`portuguese`) |
 
-**Not wired into the config** (implemented as task classes but no verified
-real dataset was found — see comments in the respective task file):
-Math-PT (`math_pt.py`), Tuguesice-PT (`tuguesice_pt.py`, entirely
-fabricated, zero hits anywhere).
+**Not wired into the config** (implemented as a task class but no verified
+real dataset was found — see comments in the task file):
+Tuguesice-PT (`tuguesice_pt.py`, entirely fabricated, zero hits anywhere).
 
 ## Running Evaluation
 

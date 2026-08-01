@@ -92,6 +92,9 @@ class BenchmarkRunner:
         self.batch_size = eval_cfg.get("batch_size", 8)
         self.use_vllm = eval_cfg.get("use_vllm", False)
         self.cache_dir = Path(eval_cfg.get("cache_dir", "outputs/eval_cache"))
+        report_cfg = config.get("report", {})
+        self.bootstrap_n = report_cfg.get("bootstrap_n", 2000)
+        self.confidence_level = report_cfg.get("confidence_level", 0.95)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.think_modes = eval_cfg.get("think_modes", ["off"])
         self.strip_think = eval_cfg.get("strip_think_from_output", True)
@@ -344,7 +347,9 @@ class BenchmarkRunner:
         if "n_correct" in metrics and "n_total" in metrics and metrics["n_total"] > 0:
             ci = {
                 "method": "wilson",
-                **wilson_score_interval(metrics["n_correct"], metrics["n_total"]),
+                **wilson_score_interval(
+                    metrics["n_correct"], metrics["n_total"], confidence_level=self.confidence_level
+                ),
             }
         elif len(eval_examples) >= 5:
             try:
@@ -352,7 +357,8 @@ class BenchmarkRunner:
                     parsed_predictions,
                     gold_labels,
                     lambda p, g, _m=bench_cfg["metric"]: compute_metrics_for_task(_m, p, g),
-                    n_bootstrap=2000,  # cheaper than the 10k default; this runs per-benchmark inline
+                    n_bootstrap=self.bootstrap_n,
+                    confidence_level=self.confidence_level,
                     seed=self.seed,
                 )
                 primary = boot.get(bench_cfg["metric"])
