@@ -27,6 +27,9 @@ class TestGetLogger:
             logger = get_logger("test_file", log_file=log_path)
             logger.info("test message")
             assert Path(log_path).exists()
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
 
     def test_log_level_respected(self):
         logger = get_logger("test_level", level="ERROR")

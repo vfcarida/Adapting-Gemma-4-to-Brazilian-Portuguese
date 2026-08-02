@@ -26,13 +26,13 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 @pytest.fixture
 def golden_enem():
-    with open(FIXTURES_DIR / "golden_enem.json") as f:
+    with open(FIXTURES_DIR / "golden_enem.json", encoding="utf-8") as f:
         return json.load(f)
 
 
 @pytest.fixture
 def golden_parsing():
-    with open(FIXTURES_DIR / "golden_parsing.json") as f:
+    with open(FIXTURES_DIR / "golden_parsing.json", encoding="utf-8") as f:
         return json.load(f)
 
 

@@ -23,7 +23,9 @@ logger = get_logger(__name__)
 
 def normalize_text(text: str) -> str:
     """Normalize text for comparison."""
-    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        c for c in unicodedata.normalize("NFKD", text) if unicodedata.category(c) != "Mn"
+    )
     text = text.lower()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^\w\s]", "", text)
