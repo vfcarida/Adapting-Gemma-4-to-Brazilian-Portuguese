@@ -7,7 +7,12 @@ import pytest
 
 # Import directly without going through __init__ to avoid torch dependency
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils.config_utils import flatten_config, load_config, merge_configs
+from src.utils.config_utils import (
+    flatten_config,
+    load_config,
+    merge_configs,
+    validate_config_schema,
+)
 
 
 class TestLoadConfig:
@@ -58,3 +63,15 @@ class TestFlattenConfig:
         config = {"x": 1, "y": {"z": 2}}
         result = flatten_config(config)
         assert result == {"x": 1, "y.z": 2}
+
+
+class TestValidateConfigSchema:
+    def test_all_keys_present(self):
+        config = {"model": {"name": "gemma"}, "output_dir": "/tmp"}
+        missing = validate_config_schema(config, ["model.name", "output_dir"])
+        assert missing == []
+
+    def test_missing_keys(self):
+        config = {"model": {"name": "gemma"}}
+        missing = validate_config_schema(config, ["model.name", "output_dir", "missing_key"])
+        assert missing == ["output_dir", "missing_key"]

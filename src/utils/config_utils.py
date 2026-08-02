@@ -68,3 +68,10 @@ def flatten_config(config: dict, prefix: str = "") -> dict[str, Any]:
         else:
             flat[full_key] = value
     return flat
+
+
+def validate_config_schema(config: dict[str, Any], required_keys: list[str]) -> list[str]:
+    """Validate that required top-level or dot-notation keys exist in config dict."""
+    flat = flatten_config(config)
+    missing = [key for key in required_keys if key not in config and key not in flat]
+    return missing

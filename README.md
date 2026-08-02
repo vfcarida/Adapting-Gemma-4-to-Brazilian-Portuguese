@@ -2,7 +2,8 @@
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/PyTorch-2.6+-ee4c2c?logo=pytorch" alt="PyTorch">
   <img src="https://img.shields.io/badge/Transformers-5.5+-yellow?logo=huggingface" alt="Transformers">
-  <img src="https://img.shields.io/badge/Tests-253%20passed-green?logo=pytest" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-287%20passed-green?logo=pytest" alt="Tests">
+  <a href="https://colab.research.google.com/github/vfcarida/Adapting-Gemma-4-to-Brazilian-Portuguese/blob/main/colab/Gemma4_PTBR_Colab.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
 </p>
 

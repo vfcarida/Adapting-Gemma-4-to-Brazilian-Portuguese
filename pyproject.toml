@@ -93,3 +93,11 @@ extend-exclude = ["Old"]  # Legacy pre-restructure snapshot, kept for reference 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]  # Line length handled separately
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+exclude = ["Old/"]
+
